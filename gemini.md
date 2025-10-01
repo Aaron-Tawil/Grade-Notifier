@@ -1,0 +1,1 @@
+Please refer to AGENTS.md for the project plan and requirements for AI agents.

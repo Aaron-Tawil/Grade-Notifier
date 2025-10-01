@@ -1,0 +1,14 @@
+# Environments & Secrets
+.env
+gcs_credentials.json
+auth.json
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDEs
+.vscode/
+.idea/
+prod.env.yaml 
