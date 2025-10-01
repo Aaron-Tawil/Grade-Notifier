@@ -3,3 +3,4 @@ python-dotenv==0.21.0
 beautifulsoup4==4.12.3
 google-cloud-storage==2.14.0
 requests==2.32.3
+functions-framework==3.5.0
