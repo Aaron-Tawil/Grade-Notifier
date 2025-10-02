@@ -3,6 +3,9 @@
 ![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
+> [!WARNING]
+> This project relies on web scraping and is not an official API. The target website's structure may change at any time, which would break the script. This project is provided as-is and may no longer be actively maintained.
+
 A serverless, automated script that checks for grade updates on TAU University student portal and sends a detailed notification to your phone via Telegram when a change is detected.
 
 ## Features
