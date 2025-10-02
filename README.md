@@ -3,7 +3,7 @@
 ![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-A serverless, automated script that checks for grade updates on my University student portal and sends a detailed notification to your phone via Telegram when a change is detected.
+A serverless, automated script that checks for grade updates on TAU University student portal and sends a detailed notification to your phone via Telegram when a change is detected.
 
 ## Features
 
@@ -179,19 +179,6 @@ This project is designed for a serverless deployment on Google Cloud Run, which 
       --location=us-central1
     ```
     *(Replace `YOUR_CLOUD_RUN_SERVICE_URL` with the URL provided in the output of the `gcloud run deploy` command).*
-
-## Configuration Variables
-
-| Variable                         | Description                                                                 | Required for Local | Required for Cloud |
-| -------------------------------- | --------------------------------------------------------------------------- | ------------------ | ------------------ |
-| `UNI_USER`                       | Your username for the TAU portal.                                           | **Yes**            | **Yes**            |
-| `UNI_PASS`                       | Your password for the TAU portal.                                           | **Yes**            | **Yes**            |
-| `UNI_ID`                         | Your 9-digit national ID number for the TAU portal.                         | **Yes**            | **Yes**            |
-| `TELEGRAM_BOT_TOKEN`             | The secret token for your Telegram bot.                                     | **Yes**            | **Yes**            |
-| `TELEGRAM_CHAT_ID`               | The chat ID to which the bot will send messages.                            | **Yes**            | **Yes**            |
-| `GCS_BUCKET_NAME`                | The name of the Google Cloud Storage bucket for caching.                    | No                 | **Yes**            |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to the GCS credentials JSON file (for local auth).                     | No                 | No                 |
-| `RUN_HEADFUL`                    | Set to `1` to run the browser with a visible UI for debugging.              | No                 | No                 |
 
 ## License
 
