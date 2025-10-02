@@ -3,6 +3,5 @@
 .gitignore
 .env
 *.pyc
-tests/
 tools/
 *.log
