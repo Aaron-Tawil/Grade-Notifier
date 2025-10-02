@@ -180,6 +180,41 @@ This project is designed for a serverless deployment on Google Cloud Run, which 
     ```
     *(Replace `YOUR_CLOUD_RUN_SERVICE_URL` with the URL provided in the output of the `gcloud run deploy` command).*
 
+## Development Workflow
+
+To make changes to the application (e.g., add a new feature or fix a bug), follow these steps:
+
+1.  **Local Development:**
+    -   Modify the Python code in `main.py`.
+    -   If you add new libraries, update `requirements.txt`.
+    -   If you add new secrets (like an email API key), add them to your local `.env` file for testing.
+    -   Test your changes thoroughly by running `python main.py` locally.
+
+2.  **Update Production Configuration (if needed):**
+    -   If you added new secrets, remember to also add them to the `prod.env.yaml` file. This file is not committed to git.
+
+3.  **Build the New Docker Image:**
+    -   Build a new container image with your changes. Replace `YOUR_PROJECT_ID` with your project ID.
+        ```bash
+        docker build -t "us-central1-docker.pkg.dev/YOUR_PROJECT_ID/grade-notifier-repo/grade-notifier-image:latest" .
+        ```
+
+4.  **Push the New Image:**
+    -   Push the new image to Google Artifact Registry.
+        ```bash
+        docker push "us-central1-docker.pkg.dev/YOUR_PROJECT_ID/grade-notifier-repo/grade-notifier-image:latest"
+        ```
+
+5.  **Deploy to Cloud Run:**
+    -   Deploy the new image to your Cloud Run service. This will create a new revision and automatically direct traffic to it.
+        ```bash
+        gcloud run deploy grade-notifier-service \
+          --image="us-central1-docker.pkg.dev/YOUR_PROJECT_ID/grade-notifier-repo/grade-notifier-image:latest" \
+          --region=us-central1 \
+          --env-vars-file=prod.env.yaml \
+          --project=YOUR_PROJECT_ID
+        ```
+
 ## License
 
 This project is distributed under the MIT License. See the `LICENSE` file for more information.

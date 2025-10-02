@@ -17,6 +17,22 @@ The application is built using a serverless, container-based architecture on GCP
 - **Telegram:** The notification service. A bot sends formatted messages to a specified chat ID when changes are detected.
 - **Cloud Logging:** Aggregates all logs from the Cloud Run service for monitoring and debugging.
 
+## Development Workflow
+
+To make changes to the application (e.g., add a new feature or fix a bug), an agent should follow this lifecycle:
+
+1.  **Local Development:**
+    -   Modify the Python code in `main.py`.
+    -   If new libraries are added, update `requirements.txt`.
+    -   If new secrets are needed, they should be added to `prod.env.yaml` by the user. The agent should not handle secrets directly.
+    -   Local testing can be done via `python main.py`, assuming a correctly configured `.env` file.
+
+2.  **Build & Push the Docker Image:**
+    -   The agent should be able to generate the `docker build` and `docker push` commands to create a new image with the code changes.
+
+3.  **Deploy the New Image to Cloud Run:**
+    -   The agent should generate the `gcloud run deploy` command to update the service with the new image.
+
 ## Requirements for AI Agents
 
 AI agents assisting with this project should be capable of the following tasks:
