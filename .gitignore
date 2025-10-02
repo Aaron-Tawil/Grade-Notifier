@@ -2,6 +2,7 @@
 .env
 gcs_credentials.json
 .venv*/
+0/
 
 # Python cache
 __pycache__/
