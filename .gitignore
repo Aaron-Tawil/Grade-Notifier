@@ -1,7 +1,6 @@
 # Environments & Secrets
 .env
 gcs_credentials.json
-auth.json
 
 # Python cache
 __pycache__/
