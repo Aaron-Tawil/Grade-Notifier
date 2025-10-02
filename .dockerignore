@@ -4,5 +4,4 @@
 .env
 prod.env.yaml
 *.pyc
-tools/
 *.log
