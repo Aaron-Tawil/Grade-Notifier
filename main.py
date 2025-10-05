@@ -309,8 +309,8 @@ def get_changes(current: Dict[str, Dict[str, str]], previous: Dict[str, Dict[str
             changes[key] = (previous_value, current_value)
     return changes
 
-def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]]) -> None:
-    """Sends a notification message via Telegram with details about what changed."""
+def _send_telegram_message(message: str, parse_mode: str = "Markdown") -> None:
+    """Sends a message via Telegram."""
     import requests
 
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -320,6 +320,27 @@ def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[st
         print("Telegram credentials not found. Skipping notification.")
         return
 
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": parse_mode,
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("--- Telegram Notification Sent Successfully! ---")
+        else:
+            print("--- Failed to Send Telegram Notification ---")
+            print(f"Status Code: {response.status_code}")
+            print(f"Response: {response.text}")
+    except Exception as e:
+        print(f"--- An error occurred while sending Telegram notification: {e} ---")
+
+
+def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]]) -> None:
+    """Formats the grade changes and sends a notification message via Telegram."""
     message_lines = ["🔔 *Grade Update!* 🔔"]
     for key, (previous_value, current_value) in changes.items():
         course_name = current_value.get("course") or key
@@ -350,23 +371,7 @@ def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[st
             message_lines.append(f"• *{course_name}*: Updated (Grade: {new_grade})")
 
     message = "\n".join(message_lines)
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown",
-    }
-
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            print("--- Telegram Notification Sent Successfully! ---")
-        else:
-            print(f"--- Failed to Send Telegram Notification ---")
-            print(f"Status Code: {response.status_code}")
-            print(f"Response: {response.text}")
-    except Exception as e:
-        print(f"--- An error occurred while sending Telegram notification: {e} ---")
+    _send_telegram_message(message)
 
 
 
@@ -650,6 +655,13 @@ def run() -> None:
             exams = extract_exam_details(page)
             if not exams:
                 save_debug_to_gcs(page, tag="no_rows")
+                _send_telegram_message(
+                    "🟡 Grade Notifier Alert 🟡\n\n"
+                    "Scraping finished, but no grade table was found.\n\n"
+                    "This could be due to a login failure or a change in the website layout. "
+                    "A debug artifact has been saved to GCS (if configured).",
+                    parse_mode="Markdown"
+                )
 
             current_dict = canonicalize(exams)
             print_preview(current_dict)
@@ -661,6 +673,16 @@ def run() -> None:
                 print(f"{len(changes)} changes detected compared to cache.")
                 save_cache_to_gcs(current_dict)  # Save the full current state
                 send_notification(changes)       # Notify only about the changes
+
+                # Trigger MacroDroid webhook
+                try:
+                    import requests
+                    url = "https://trigger.macrodroid.com/61631bb4-126f-4ccc-8dc1-be952baf6193/grade"
+                    print(f"Triggering MacroDroid webhook: {url}")
+                    requests.get(url, timeout=5)
+                    print("MacroDroid webhook triggered successfully.")
+                except Exception as e:
+                    print(f"Failed to trigger MacroDroid webhook: {e}")
             else:
                 print("No changes vs cache.")
         finally:
@@ -677,6 +699,12 @@ def main(request):
         return "Script executed successfully.", 200
     except Exception as e:
         print(f"An error occurred: {e}")
+        _send_telegram_message(
+            f"🔴 Grade Notifier CRITICAL 🔴\n\n"
+            f"The script failed with an unhandled error:\n\n"
+            f"```\n{e}\n```",
+            parse_mode="Markdown"
+        )
         return "An error occurred.", 500
 
 if __name__ == "__main__":
