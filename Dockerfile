@@ -37,7 +37,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN playwright install chromium
 
 # Copy the application code
-COPY main.py .
+COPY . .
 
 # Set the command to run the application.
 # Functions-framework will automatically use the $PORT env var provided by Cloud Run.

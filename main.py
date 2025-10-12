@@ -735,7 +735,7 @@ def monitor_with_playwright() -> None:
                 )
 
             current_dict = canonicalize(exams)
-            print_preview(current_dict)
+            #print_preview(current_dict)
 
             previous = load_cache_from_gcs(CACHE_FILE_NAME)
             changes = get_changes(current=current_dict, previous=previous)
