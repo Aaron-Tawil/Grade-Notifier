@@ -7,10 +7,13 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 import re
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from dotenv import load_dotenv
 from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright
+
+from dataclasses import asdict
+from ims import IMS, GradeInfo
 
 try:
     from google.cloud import storage
@@ -39,6 +42,7 @@ PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 ARTIFACT_PREFIX = os.getenv("GCS_ARTIFACT_PREFIX", "tau_grades/debug")
 CACHE_FILE_NAME = os.getenv("CACHE_FILE_NAME", "grades_cache.json")
+IMS_CACHE_FILE_NAME = os.getenv("IMS_CACHE_FILE_NAME", "grades_cache_ims.json")
 
 load_dotenv()
 
@@ -269,31 +273,31 @@ def save_debug_to_gcs(page, tag: str = "debug") -> None:
         print(f"Error saving debug artifacts to GCS: {exc}")
 
 
-def load_cache_from_gcs() -> Dict[str, Dict[str, str]]:
+def load_cache_from_gcs(cache_file: str) -> Any:
     if not GCS_BUCKET_NAME or storage is None:
         return {}
     try:
         client = storage.Client()
         bucket = client.bucket(GCS_BUCKET_NAME)
-        blob = bucket.blob(CACHE_FILE_NAME)
+        blob = bucket.blob(cache_file)
         if blob.exists():
             cache_content = blob.download_as_text()
             return json.loads(cache_content)
     except Exception as exc:  # pragma: no cover - network access
-        print(f"Error loading cache from GCS: {exc}")
+        print(f"Error loading cache from GCS ({cache_file}): {exc}")
     return {}
 
 
-def save_cache_to_gcs(data: Dict[str, Dict[str, str]]) -> None:
+def save_cache_to_gcs(data: Any, cache_file: str) -> None:
     if not GCS_BUCKET_NAME or storage is None:
         return
     try:
         client = storage.Client()
         bucket = client.bucket(GCS_BUCKET_NAME)
-        blob = bucket.blob(CACHE_FILE_NAME)
+        blob = bucket.blob(cache_file)
         blob.upload_from_string(json.dumps(data, ensure_ascii=False, indent=2))
     except Exception as exc:  # pragma: no cover - network access
-        print(f"Error saving cache to GCS: {exc}")
+        print(f"Error saving cache to GCS ({cache_file}): {exc}")
 
 
 def get_changes(current: Dict[str, Dict[str, str]], previous: Dict[str, Dict[str, str]]) -> Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]]:
@@ -373,6 +377,73 @@ def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[st
     message = "\n".join(message_lines)
     _send_telegram_message(message)
 
+
+def fetch_course_names() -> dict[str, str]:
+    """Load the local catalog mapping course IDs to names."""
+    try:
+        with open("data/courses.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print("Warning: 'data/courses.json' not found. Course names will be unknown.")
+        return {}
+    except json.JSONDecodeError:
+        print("Warning: Failed to decode JSON from 'data/courses.json'. Course names will be unknown.")
+        return {}
+
+    mapping: dict[str, str] = {}
+    for course_id, info in data.items():
+        if isinstance(info, dict) and "name" in info:
+            mapping[course_id.replace("-", "")] = info["name"]
+    return mapping
+
+
+def get_ims_changes(current_grades: List[GradeInfo], previous_grades: List[GradeInfo]) -> List[tuple[Optional[GradeInfo], GradeInfo]]:
+    """Compares two lists of GradeInfo objects and returns a list of changes."""
+    changes: List[tuple[Optional[GradeInfo], GradeInfo]] = []
+    
+    prev_map = {f"{g.course_id}-{g.semester}": g for g in previous_grades}
+    curr_map = {f"{g.course_id}-{g.semester}": g for g in current_grades}
+
+    for key, current_grade in curr_map.items():
+        previous_grade = prev_map.get(key)
+        if previous_grade != current_grade:
+            changes.append((previous_grade, current_grade))
+            
+    return changes
+
+
+def send_ims_notification(changes: List[tuple[Optional[GradeInfo], GradeInfo]], course_names: Dict[str, str]) -> None:
+    """Formats the IMS grade changes and sends a notification."""
+    message_lines = ["🔔 *Grade Update (IMS API)!* 🔔"]
+
+    for prev, current in changes:
+        course_name = course_names.get(current.course_id, current.course_id)
+        
+        if prev is None:
+            # New grade
+            grade_display = "Exempt" if current.is_exempt else (str(current.grade) if current.grade is not None else "N/A")
+            message_lines.append(f"• *{course_name}* ({current.semester.upper()}) (New): {grade_display}")
+        else:
+            # Modified grade
+            change_details = []
+            
+            old_grade_display = "Exempt" if prev.is_exempt else (str(prev.grade) if prev.grade is not None else "N/A")
+            new_grade_display = "Exempt" if current.is_exempt else (str(current.grade) if current.grade is not None else "N/A")
+            
+            if old_grade_display != new_grade_display:
+                change_details.append(f"Grade changed from `{old_grade_display}` to *{new_grade_display}*")
+            elif prev.is_exempt != current.is_exempt:
+                 status = "Exempt" if current.is_exempt else "No longer exempt"
+                 change_details.append(f"Status changed to: *{status}*")
+
+            if change_details:
+                message_lines.append(f"• *{course_name}* ({current.semester.upper()}): {', '.join(change_details)}")
+            else:
+                # Fallback for other changes
+                message_lines.append(f"• *{course_name}* ({current.semester.upper()}): Updated")
+
+    message = "\n".join(message_lines)
+    _send_telegram_message(message)
 
 
 
@@ -588,7 +659,7 @@ def apply_default_filters(page) -> None:
         print(f"An error occurred during filter clearing: {exc}")
 
 
-def run() -> None:
+def monitor_with_playwright() -> None:
     if not UNI_USER or not UNI_PASS:
         print("Set UNI_USER and UNI_PASS environment variables before running.")
         sys.exit(1)
@@ -666,13 +737,13 @@ def run() -> None:
             current_dict = canonicalize(exams)
             print_preview(current_dict)
 
-            previous = load_cache_from_gcs()
+            previous = load_cache_from_gcs(CACHE_FILE_NAME)
             changes = get_changes(current=current_dict, previous=previous)
 
             if changes:
                 print(f"{len(changes)} changes detected compared to cache.")
-                save_cache_to_gcs(current_dict)  # Save the full current state
-                send_notification(changes)       # Notify only about the changes
+                save_cache_to_gcs(current_dict, CACHE_FILE_NAME)
+                send_notification(changes)
 
                 # Trigger MacroDroid webhook
                 try:
@@ -690,6 +761,85 @@ def run() -> None:
                 context.close()
             if browser:
                 browser.close()
+
+
+def monitor_with_ims() -> None:
+    """Fetches grades using the IMS API and notifies of changes."""
+    if not all([UNI_USER, UNI_ID, UNI_PASS]):
+        print("IMS credentials (UNI_USER, UNI_ID, UNI_PASS) not set. Skipping.")
+        return
+
+    print("Fetching grades via IMS API...")
+    ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS)
+    
+    # Fetch for current and surrounding years for safety
+    current_year = datetime.now().year
+    years_to_fetch = [current_year - 1, current_year, current_year + 1, current_year + 2]
+    
+    current_grades = ims.get_all_grades(years=years_to_fetch)
+    
+    # Sort for consistency
+    current_grades.sort(key=lambda g: (g.semester, g.course_id))
+    
+    print(f"Found {len(current_grades)} grades via IMS.")
+    if not current_grades:
+        print("No grades found via IMS. Skipping further processing.")
+        return
+
+    # Load previous state from cache
+    previous_grades_raw = load_cache_from_gcs(IMS_CACHE_FILE_NAME)
+    previous_grades = [GradeInfo(**g) for g in previous_grades_raw] if previous_grades_raw else []
+
+    # Detect changes
+    changes = get_ims_changes(current_grades, previous_grades)
+
+    if changes:
+        print(f"{len(changes)} changes detected in IMS grades.")
+        
+        # Fetch course names for user-friendly notifications
+        course_names = fetch_course_names()
+        
+        # Send notification
+        send_ims_notification(changes, course_names)
+        
+        # Save new state to cache
+        # Convert list of dataclasses to list of dicts for JSON serialization
+        save_cache_to_gcs([asdict(g) for g in current_grades], IMS_CACHE_FILE_NAME)
+
+        # Trigger MacroDroid webhook
+        try:
+            import requests
+            url = "https://trigger.macrodroid.com/61631bb4-126f-4ccc-8dc1-be952baf6193/grade"
+            print(f"Triggering MacroDroid webhook: {url}")
+            requests.get(url, timeout=5)
+            print("MacroDroid webhook triggered successfully.")
+        except Exception as e:
+            print(f"Failed to trigger MacroDroid webhook: {e}")
+    else:
+        print("No changes in IMS grades vs cache.")
+
+
+def run() -> None:
+    """Runs all available grade monitors."""
+    monitors = {
+        "Playwright": monitor_with_playwright,
+        "IMS": monitor_with_ims,
+    }
+    
+    for name, monitor_func in monitors.items():
+        try:
+            print(f"--- Running {name} Monitor ---")
+            monitor_func()
+            print(f"--- {name} Monitor Finished ---")
+        except Exception as e:
+            print(f"--- {name} Monitor Failed ---")
+            print(f"An error occurred in {name} monitor: {e}")
+            _send_telegram_message(
+                f"🔴 Grade Notifier CRITICAL 🔴\n\n"
+                f"The *{name} monitor* failed with an error:\n\n"
+                f"```\n{e}\n```",
+                parse_mode="Markdown"
+            )
 
 
 def main(request):
