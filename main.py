@@ -783,7 +783,14 @@ def monitor_with_ims() -> None:
     
     print(f"Found {len(current_grades)} grades via IMS.")
     if not current_grades:
-        print("No grades found via IMS. Skipping further processing.")
+        print("No grades found via IMS. Sending notification and skipping.")
+        _send_telegram_message(
+            "🟡 Grade Notifier Alert 🟡\n\n"
+            "IMS API fetch finished, but no grades were found.\n\n"
+            "This could be due to an issue with the API or credentials. "
+            "It might also be correct if no grades are currently available.",
+            parse_mode="Markdown",
+        )
         return
 
     # Load previous state from cache
