@@ -172,7 +172,12 @@ def extract_from_table(table_handle) -> List[Dict[str, str]]:
         notebook_button = row.query_selector("button[data-button], button.icon-ShowNote, button")
         notebook_available = False
         if notebook_button:
-            notebook_available = notebook_button.get_attribute("disabled") is None
+            button_text = notebook_button.inner_text()
+            normalized_button_text = normalize_text(button_text)
+            notebook_available = (
+                notebook_button.get_attribute("disabled") is None
+                and "הצגת" in normalized_button_text
+            )
         records.append(
             parse_grade_row(
                 cells,
@@ -746,14 +751,15 @@ def monitor_with_playwright() -> None:
                 send_notification(changes)
 
                 # Trigger MacroDroid webhook
-                try:
-                    import requests
-                    url = "https://trigger.macrodroid.com/61631bb4-126f-4ccc-8dc1-be952baf6193/grade"
-                    print(f"Triggering MacroDroid webhook: {url}")
-                    requests.get(url, timeout=5)
-                    print("MacroDroid webhook triggered successfully.")
-                except Exception as e:
-                    print(f"Failed to trigger MacroDroid webhook: {e}")
+                macrodroid_url = os.getenv("MACRODROID_WEBHOOK_URL")
+                if macrodroid_url:
+                    try:
+                        import requests
+                        print("Triggering MacroDroid webhook...")
+                        requests.get(macrodroid_url, timeout=5)
+                        print("MacroDroid webhook triggered successfully.")
+                    except Exception as e:
+                        print(f"Failed to trigger MacroDroid webhook: {e}")
             else:
                 print("No changes vs cache.")
         finally:
@@ -814,14 +820,15 @@ def monitor_with_ims() -> None:
         save_cache_to_gcs([asdict(g) for g in current_grades], IMS_CACHE_FILE_NAME)
 
         # Trigger MacroDroid webhook
-        try:
-            import requests
-            url = "https://trigger.macrodroid.com/61631bb4-126f-4ccc-8dc1-be952baf6193/grade"
-            print(f"Triggering MacroDroid webhook: {url}")
-            requests.get(url, timeout=5)
-            print("MacroDroid webhook triggered successfully.")
-        except Exception as e:
-            print(f"Failed to trigger MacroDroid webhook: {e}")
+        macrodroid_url = os.getenv("MACRODROID_WEBHOOK_URL")
+        if macrodroid_url:
+            try:
+                import requests
+                print("Triggering MacroDroid webhook...")
+                requests.get(macrodroid_url, timeout=5)
+                print("MacroDroid webhook triggered successfully.")
+            except Exception as e:
+                print(f"Failed to trigger MacroDroid webhook: {e}")
     else:
         print("No changes in IMS grades vs cache.")
 
