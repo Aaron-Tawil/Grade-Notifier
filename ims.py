@@ -1,7 +1,7 @@
 import datetime
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlencode, urljoin
 
 import requests
@@ -29,16 +29,19 @@ class GradeInfo:
 
 
 class IMS:
-    def __init__(self, username: str, id: str, password: str):
+    def __init__(self, username: str, id: str, password: str, verify_ssl: Union[bool, str] = True):
         self.username = username
         self.id = id
         self.password = password
+        self.verify_ssl = verify_ssl
         self.session = requests.Session()
+        self.session.verify = self.verify_ssl
 
         self._sign_in()
 
     def _sign_in(self):
         self.session = requests.Session()
+        self.session.verify = self.verify_ssl
 
         # Because of stupid redirection stuff, we need to sign in to the regular stuff before IMS.
         self.session.get(IMS_BASE_URL + "/TalSSO/")

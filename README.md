@@ -10,6 +10,7 @@ A serverless, automated script that checks for grade updates on TAU University s
 
 ## Features
 
+-   **Dual Monitoring Strategy:** The script uses two independent methods to ensure reliability. It scrapes the main student portal and also queries the underlying IMS system directly.
 -   **Automated Login:** Securely logs into the TAU student portal using headless browser automation.
 -   **Intelligent Change Detection:** Notifies you for both new grades and changes to exam notebook availability.
 -   **Persistent Caching:** Uses Google Cloud Storage (GCS) to store a cache of your grades, ensuring it only notifies you about actual changes.
@@ -18,12 +19,14 @@ A serverless, automated script that checks for grade updates on TAU University s
 
 ## How It Works
 
-The system runs on a fully automated, serverless architecture using Docker on Google Cloud:
+The system runs on a fully automated, serverless architecture using Docker on Google Cloud. It employs a dual-method approach for maximum reliability:
 
 1.  **Cloud Scheduler:** A cron job triggers the system on your defined schedule (e.g., every 10 minutes from Sunday to Thursday).
-2.  **Cloud Run:** The scheduler invokes a secure Cloud Run service. This service runs a Docker container built from this repository.
-3.  **Scraping:** The application launches a headless Playwright instance inside the container, logs into the TAU portal, and scrapes the grades table.
-4.  **Comparison:** The scraped data is compared against the previous version stored in a `.json` file in a Google Cloud Storage bucket.
+2.  **Cloud Run:** The scheduler invokes a secure Cloud Run service, which runs the Docker container.
+3.  **Monitoring & Scraping:**
+    -   **IMS API (Primary Method):** The script first makes direct requests to the university's backend IMS system. This method is fast, efficient, and less prone to breaking as it does not rely on the website's visual layout. It fetches grade data in a structured format.
+    -   **Playwright Web Scraping (Secondary Method):** The application also launches a headless Playwright instance, logs into the main TAU portal, and scrapes the visual grades table. This acts as a fallback and captures details that may not be available via the IMS system, such as exam notebook availability.
+4.  **Comparison:** The data from both sources is canonicalized and compared against the previous version stored in a `.json` file in a Google Cloud Storage bucket.
 5.  **Notification & Caching:** If a difference is found, the script sends a detailed notification to your Telegram and updates the cache file in GCS with the new data for the next run.
 
 ## Local Setup and Usage

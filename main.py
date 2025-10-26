@@ -9,11 +9,15 @@ from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+import urllib3
 from dotenv import load_dotenv
 from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright
 
 from dataclasses import asdict
 from ims import IMS, GradeInfo
+
+# Suppress the InsecureRequestWarning from urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 try:
     from google.cloud import storage
@@ -776,7 +780,8 @@ def monitor_with_ims() -> None:
         return
 
     print("Fetching grades via IMS API...")
-    ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS)
+    verify_ssl = _is_truthy(os.getenv("IMS_VERIFY_SSL", "False"))
+    ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS, verify_ssl=verify_ssl)
     
     # Fetch for current and surrounding years for safety
     current_year = datetime.now().year
