@@ -48,6 +48,18 @@ ARTIFACT_PREFIX = os.getenv("GCS_ARTIFACT_PREFIX", "tau_grades/debug")
 CACHE_FILE_NAME = os.getenv("CACHE_FILE_NAME", "grades_cache.json")
 IMS_CACHE_FILE_NAME = os.getenv("IMS_CACHE_FILE_NAME", "grades_cache_ims.json")
 
+
+def _resolve_ims_verify_setting() -> tuple[bool | str, bool]:
+    """Determine how the IMS client should verify TLS certificates."""
+    ca_bundle = os.getenv("IMS_CA_BUNDLE", "").strip()
+    if ca_bundle:
+        bundle_path = Path(ca_bundle)
+        if bundle_path.exists():
+            return str(bundle_path), True
+        print(f"IMS_CA_BUNDLE path '{bundle_path}' not found; falling back to IMS_VERIFY_SSL flag.")
+    verify_flag = _is_truthy(os.getenv("IMS_VERIFY_SSL", "true"))
+    return verify_flag, verify_flag
+
 load_dotenv()
 
 UNI_USER = os.getenv("UNI_USER", "")
@@ -780,8 +792,21 @@ def monitor_with_ims() -> None:
         return
 
     print("Fetching grades via IMS API...")
-    verify_ssl = _is_truthy(os.getenv("IMS_VERIFY_SSL", "False"))
-    ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS, verify_ssl=verify_ssl)
+    from requests import exceptions as requests_exceptions
+
+    verify_setting, verify_enabled = _resolve_ims_verify_setting()
+    fallback_used = False
+
+    try:
+        ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS, verify_ssl=verify_setting)
+    except (requests_exceptions.SSLError, OSError) as exc:
+        if verify_enabled:
+            print(f"IMS SSL verification failed ({exc}). Retrying with verification disabled.")
+            verify_enabled = False
+            fallback_used = True
+            ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS, verify_ssl=False)
+        else:
+            raise
     
     # Fetch for current and surrounding years for safety
     current_year = datetime.now().year
@@ -836,6 +861,15 @@ def monitor_with_ims() -> None:
                 print(f"Failed to trigger MacroDroid webhook: {e}")
     else:
         print("No changes in IMS grades vs cache.")
+
+    if fallback_used:
+        warning = (
+            "🟡 Grade Notifier Warning 🟡\n\n"
+            "IMS monitor had to disable SSL verification after the initial attempt failed.\n"
+            "Please refresh the IMS_CA_BUNDLE or trust store to restore full TLS verification."
+        )
+        print("IMS monitor completed with SSL verification disabled after fallback.")
+        _send_telegram_message(warning)
 
 
 def run() -> None:

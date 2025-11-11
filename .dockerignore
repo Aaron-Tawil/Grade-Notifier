@@ -5,3 +5,4 @@
 prod.env.yaml
 *.pyc
 *.log
+tests/
