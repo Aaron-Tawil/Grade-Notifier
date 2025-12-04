@@ -16,3 +16,6 @@
 
 #!include:.gitignore
 tests/
+
+deploy.py
+venv/

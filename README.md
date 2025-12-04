@@ -35,6 +35,7 @@ The system runs on a fully automated, serverless architecture using Docker on Go
 
 -   Python 3.11+
 -   Git
+-   Docker (for deployment)
 -   [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) (for deployment)
 
 ### Installation
@@ -103,78 +104,40 @@ You can run this script on any host that has Python and can run scheduled jobs (
 
 ### Part B: Google Cloud Deployment (Cloud Run with Docker)
 
-This project is designed for a serverless deployment on Google Cloud Run, which is highly cost-effective and requires no server management. This method involves building and deploying a Docker container.
+This project is designed for a serverless deployment on Google Cloud Run. We provide a helper script `deploy.py` to automate the build and deploy process.
 
 1.  **Initial Setup:**
     -   Authenticate with the gcloud CLI: `gcloud auth login`
     -   Set your project: `gcloud config set project YOUR_PROJECT_ID`
-    -   Enable required APIs for the services we will use:
+    -   Enable required APIs:
         ```bash
         gcloud services enable run.googleapis.com cloudscheduler.googleapis.com artifactregistry.googleapis.com iam.googleapis.com storage.googleapis.com
         ```
 
-2.  **Create GCS Bucket:**
-    Create a bucket to store the grades cache. Choose a globally unique name.
+2.  **Create Resources (One-time setup):**
+    -   **GCS Bucket:** Create a bucket for the cache (e.g., `gs://your-unique-bucket-name`).
+    -   **Service Account:** Create a service account and grant it `roles/storage.objectAdmin` on the bucket.
+    -   **Artifact Registry:** Ensure you have authenticated Docker with Google Cloud:
+        ```bash
+        gcloud auth configure-docker us-central1-docker.pkg.dev
+        ```
+
+3.  **Configuration:**
+    -   Create `prod.env.yaml` with your production secrets (see "Configuration" section).
+    -   Ensure your `.env` file has `GOOGLE_CLOUD_PROJECT` set, or be ready to enter it when prompted.
+
+4.  **Deploy:**
+    Run the deployment script:
     ```bash
-    gcloud storage buckets create gs://your-unique-bucket-name --location=us-central1
+    python deploy.py
     ```
+    This script will:
+    -   Build the Docker image.
+    -   Push it to Google Artifact Registry.
+    -   Deploy the service to Cloud Run.
 
-3.  **Create Service Account:**
-    Create a dedicated identity for the script to run with.
-    ```bash
-    gcloud iam service-accounts create grade-notifier-sa --display-name="Grade Notifier Service Account"
-    ```
-    Grant it permission to read from and write to the bucket:
-    ```bash
-    gcloud storage buckets add-iam-policy-binding gs://your-unique-bucket-name --member="serviceAccount:grade-notifier-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" --role="roles/storage.objectAdmin"
-    ```
-
-4.  **Create Production Environment File:**
-    Create a file named `prod.env.yaml` in your project root with your production secrets. This file is already in `.gitignore` and will not be committed.
-    ```yaml
-    UNI_USER: 'your_tau_username'
-    UNI_PASS: 'your_tau_password'
-    UNI_ID: 'your_tau_id_number'
-    TELEGRAM_BOT_TOKEN: 'your_telegram_bot_token'
-    TELEGRAM_CHAT_ID: 'your_telegram_chat_id'
-    GCS_BUCKET_NAME: 'your-unique-bucket-name'
-    ```
-
-5.  **Build, Push, and Deploy the Service:**
-    These steps build your application into a Docker container, push it to Google's Artifact Registry, and deploy it to Cloud Run.
-
-    First, configure Docker to authenticate with Artifact Registry (you only need to do this once):
-    ```bash
-    gcloud auth configure-docker us-central1-docker.pkg.dev
-    ```
-
-    Next, define your full image name. **Replace `YOUR_PROJECT_ID`** with your actual project ID.
-    ```bash
-    export IMAGE_NAME="us-central1-docker.pkg.dev/YOUR_PROJECT_ID/grade-notifier-repo/grade-notifier-image:latest"
-    ```
-
-    Now, build the image using the `Dockerfile`:
-    ```bash
-    docker build -t $IMAGE_NAME .
-    ```
-
-    Push the image to Artifact Registry:
-    ```bash
-    docker push $IMAGE_NAME
-    ```
-
-    Finally, deploy the image to Cloud Run. This command creates a secure service that cannot be accessed publicly.
-    ```bash
-    gcloud run deploy grade-notifier-service \
-      --image=$IMAGE_NAME \
-      --region=us-central1 \
-      --env-vars-file=prod.env.yaml \
-      --service-account=grade-notifier-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com \
-      --no-allow-unauthenticated
-    ```
-
-6.  **Create the Cloud Scheduler Job:**
-    This job will securely trigger your private Cloud Run service on a schedule.
+5.  **Create Cloud Scheduler Job:**
+    (This is a one-time setup)
     ```bash
     gcloud scheduler jobs create http grade-notifier-job \
       --schedule="*/10 8-23 * * 0-4" \
@@ -184,42 +147,19 @@ This project is designed for a serverless deployment on Google Cloud Run, which 
       --oidc-service-account-email=grade-notifier-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com \
       --location=us-central1
     ```
-    *(Replace `YOUR_CLOUD_RUN_SERVICE_URL` with the URL provided in the output of the `gcloud run deploy` command).*
+    *(Replace `YOUR_CLOUD_RUN_SERVICE_URL` with the URL provided in the output of the `deploy.py` script).*
 
 ## Development Workflow
 
-To make changes to the application (e.g., add a new feature or fix a bug), follow these steps:
+To make changes to the application (e.g., add a new feature or fix a bug):
 
 1.  **Local Development:**
     -   Modify the Python code in `main.py`.
-    -   If you add new libraries, update `requirements.txt`.
-    -   If you add new secrets (like an email API key), add them to your local `.env` file for testing.
     -   Test your changes thoroughly by running `python main.py` locally.
 
-2.  **Update Production Configuration (if needed):**
-    -   If you added new secrets, remember to also add them to the `prod.env.yaml` file. This file is not committed to git.
-
-3.  **Build the New Docker Image:**
-    -   Build a new container image with your changes. Replace `YOUR_PROJECT_ID` with your project ID.
-        ```bash
-        docker build -t "us-central1-docker.pkg.dev/YOUR_PROJECT_ID/grade-notifier-repo/grade-notifier-image:latest" .
-        ```
-
-4.  **Push the New Image:**
-    -   Push the new image to Google Artifact Registry.
-        ```bash
-        docker push "us-central1-docker.pkg.dev/YOUR_PROJECT_ID/grade-notifier-repo/grade-notifier-image:latest"
-        ```
-
-5.  **Deploy to Cloud Run:**
-    -   Deploy the new image to your Cloud Run service. This will create a new revision and automatically direct traffic to it.
-        ```bash
-        gcloud run deploy grade-notifier-service \
-          --image="us-central1-docker.pkg.dev/YOUR_PROJECT_ID/grade-notifier-repo/grade-notifier-image:latest" \
-          --region=us-central1 \
-          --env-vars-file=prod.env.yaml \
-          --project=YOUR_PROJECT_ID
-        ```
+2.  **Deploy Changes:**
+    -   Run `python deploy.py`.
+    -   This automatically builds a new Docker image, pushes it to the registry, and deploys the new revision to Cloud Run.
 
 ## License
 

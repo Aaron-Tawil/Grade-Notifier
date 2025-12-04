@@ -6,3 +6,7 @@ prod.env.yaml
 *.pyc
 *.log
 tests/
+
+deploy.py
+venv/
+__pycache__/
