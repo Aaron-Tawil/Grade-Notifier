@@ -7,6 +7,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 import re
+import logging
 from typing import Any, Dict, Iterable, List, Optional
 
 import urllib3
@@ -18,6 +19,14 @@ from ims import IMS, GradeInfo
 
 # Suppress the InsecureRequestWarning from urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 try:
     from google.cloud import storage
@@ -56,7 +65,7 @@ def _resolve_ims_verify_setting() -> tuple[bool | str, bool]:
         bundle_path = Path(ca_bundle)
         if bundle_path.exists():
             return str(bundle_path), True
-        print(f"IMS_CA_BUNDLE path '{bundle_path}' not found; falling back to IMS_VERIFY_SSL flag.")
+        logger.warning(f"IMS_CA_BUNDLE path '{bundle_path}' not found; falling back to IMS_VERIFY_SSL flag.")
     verify_flag = _is_truthy(os.getenv("IMS_VERIFY_SSL", "true"))
     return verify_flag, verify_flag
 
@@ -216,7 +225,7 @@ def extract_exam_details(page) -> List[Dict[str, str]]:
         if records:
             return records
 
-    print("No grade table detected; returning empty result.")
+    logger.warning("No grade table detected; returning empty result.")
     return []
 
 
@@ -256,7 +265,7 @@ def canonicalize(records: Iterable[Dict[str, str]]) -> Dict[str, Dict[str, str]]
 
 
 def print_preview(current: Dict[str, Dict[str, str]]) -> None:
-    print("\n=== Parsed grades preview ===")
+    logger.info("\n=== Parsed grades preview ===")
     for key, data in current.items():
         title = data.get("course") or key
         grade = data.get("grade", "")
@@ -270,8 +279,8 @@ def print_preview(current: Dict[str, Dict[str, str]]) -> None:
         ]
         extras = [item for item in extras if item]
         suffix = f"  |  {'  '.join(extras)}" if extras else ""
-        print(f"{title}  |  Grade: {grade}{suffix}")
-    print("=== end ===\n")
+        logger.info(f"{title}  |  Grade: {grade}{suffix}")
+    logger.info("=== end ===\n")
 
 
 def save_debug_to_gcs(page, tag: str = "debug") -> None:
@@ -281,7 +290,7 @@ def save_debug_to_gcs(page, tag: str = "debug") -> None:
         html_path.write_text(page.content(), encoding="utf-8")
         page.screenshot(path=str(png_path), full_page=True)
     except Exception as exc:
-        print(f"Error writing local debug artifacts: {exc}")
+        logger.error(f"Error writing local debug artifacts: {exc}")
 
     if not GCS_BUCKET_NAME or storage is None:
         return
@@ -291,7 +300,7 @@ def save_debug_to_gcs(page, tag: str = "debug") -> None:
         bucket.blob(f"{ARTIFACT_PREFIX}/{tag}.html").upload_from_filename(str(html_path))
         bucket.blob(f"{ARTIFACT_PREFIX}/{tag}.png").upload_from_filename(str(png_path))
     except Exception as exc:  # pragma: no cover - network access
-        print(f"Error saving debug artifacts to GCS: {exc}")
+        logger.error(f"Error saving debug artifacts to GCS: {exc}")
 
 
 def load_cache_from_gcs(cache_file: str) -> Any:
@@ -305,7 +314,7 @@ def load_cache_from_gcs(cache_file: str) -> Any:
             cache_content = blob.download_as_text()
             return json.loads(cache_content)
     except Exception as exc:  # pragma: no cover - network access
-        print(f"Error loading cache from GCS ({cache_file}): {exc}")
+        logger.error(f"Error loading cache from GCS ({cache_file}): {exc}")
     return {}
 
 
@@ -318,7 +327,7 @@ def save_cache_to_gcs(data: Any, cache_file: str) -> None:
         blob = bucket.blob(cache_file)
         blob.upload_from_string(json.dumps(data, ensure_ascii=False, indent=2))
     except Exception as exc:  # pragma: no cover - network access
-        print(f"Error saving cache to GCS ({cache_file}): {exc}")
+        logger.error(f"Error saving cache to GCS ({cache_file}): {exc}")
 
 
 def get_changes(current: Dict[str, Dict[str, str]], previous: Dict[str, Dict[str, str]]) -> Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]]:
@@ -342,7 +351,7 @@ def _send_telegram_message(message: str, parse_mode: str = "Markdown") -> None:
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials not found. Skipping notification.")
+        logger.warning("Telegram credentials not found. Skipping notification.")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -355,13 +364,13 @@ def _send_telegram_message(message: str, parse_mode: str = "Markdown") -> None:
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("--- Telegram Notification Sent Successfully! ---")
+            logger.info("--- Telegram Notification Sent Successfully! ---")
         else:
-            print("--- Failed to Send Telegram Notification ---")
-            print(f"Status Code: {response.status_code}")
-            print(f"Response: {response.text}")
+            logger.error("--- Failed to Send Telegram Notification ---")
+            logger.error(f"Status Code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
     except Exception as e:
-        print(f"--- An error occurred while sending Telegram notification: {e} ---")
+        logger.error(f"--- An error occurred while sending Telegram notification: {e} ---")
 
 
 def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]]) -> None:
@@ -405,10 +414,10 @@ def fetch_course_names() -> dict[str, str]:
         with open("data/courses.json", "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        print("Warning: 'data/courses.json' not found. Course names will be unknown.")
+        logger.warning("Warning: 'data/courses.json' not found. Course names will be unknown.")
         return {}
     except json.JSONDecodeError:
-        print("Warning: Failed to decode JSON from 'data/courses.json'. Course names will be unknown.")
+        logger.warning("Warning: Failed to decode JSON from 'data/courses.json'. Course names will be unknown.")
         return {}
 
     mapping: dict[str, str] = {}
@@ -534,7 +543,7 @@ def bypass_intro(page) -> None:
 
 def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms: int = 90000) -> bool:
     """Log in on the TAU NIDP React screen."""
-    print("[login] logging in")
+    logger.info("[login] logging in")
     page.wait_for_load_state("domcontentloaded", timeout=max_wait_ms)
     page.wait_for_function(
         """
@@ -543,7 +552,7 @@ def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms:
         """,
         timeout=max_wait_ms,
     )
-    print("searching username input")
+    logger.debug("searching username input")
 
     user_loc = None
     user_selector_used = None
@@ -554,7 +563,7 @@ def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms:
         "input[type='text']",
     ):
         candidate = page.locator(selector)
-        print(candidate)
+        logger.debug(f"Candidate: {candidate}")
         if candidate.count():
             user_loc = candidate.first
             user_selector_used = selector
@@ -582,17 +591,17 @@ def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms:
 
     pass_candidates = page.locator('input[type="password"]')
     pass_loc = pass_candidates.first if pass_candidates.count() else None
-    print(f"[login] user selector: {user_selector_used}, id selector: {id_selector_used}, pass available: {bool(pass_loc)}")
+    logger.debug(f"[login] user selector: {user_selector_used}, id selector: {id_selector_used}, pass available: {bool(pass_loc)}")
 
     if user_loc:
         try:
             user_loc.wait_for(state="visible", timeout=max_wait_ms)
         except Exception:
             pass
-        print("[login] user locator found")
+        logger.debug("[login] user locator found")
         user_loc.fill(user)
     else:
-        print("[login] user locator not found")
+        logger.warning("[login] user locator not found")
 
     if national_id and id_loc:
         try:
@@ -601,7 +610,7 @@ def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms:
             pass
         id_loc.fill(national_id)
     elif national_id:
-        print("[login] ID locator not found")
+        logger.warning("[login] ID locator not found")
 
     if pass_loc:
         try:
@@ -610,7 +619,7 @@ def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms:
             pass
         pass_loc.fill(pwd)
     else:
-        print("[login] password locator not found")
+        logger.warning("[login] password locator not found")
 
     submit = None
     button_locator = page.get_by_role(
@@ -657,32 +666,32 @@ def apply_default_filters(page) -> None:
         count = remove_buttons.count()
 
         if count > 0:
-            print(f"Found {count} filter remove buttons to click.")
+            logger.debug(f"Found {count} filter remove buttons to click.")
             # Iterate backwards to safely handle DOM changes while clicking.
             for i in range(count - 1, -1, -1):
                 try:
                     remove_buttons.nth(i).click(timeout=5000)
                     page.wait_for_timeout(500)  # Brief pause after click.
                 except Exception as e:
-                    print(f"Could not click filter remove button at index {i}: {e}")
+                    logger.warning(f"Could not click filter remove button at index {i}: {e}")
         else:
-            print("No filter remove buttons found. Filters may already be clear.")
+            logger.debug("No filter remove buttons found. Filters may already be clear.")
 
         # After clearing filters, the table should refresh.
         # We wait for the network to be idle to ensure the data is updated.
         page.wait_for_load_state("networkidle", timeout=45000)
-        print("Network is idle after attempting to clear filters.")
+        logger.debug("Network is idle after attempting to clear filters.")
 
     except PWTimeout:
-        print("Timeout waiting for network idle after attempting to clear filters.")
+        logger.warning("Timeout waiting for network idle after attempting to clear filters.")
         pass
     except Exception as exc:
-        print(f"An error occurred during filter clearing: {exc}")
+        logger.error(f"An error occurred during filter clearing: {exc}")
 
 
 def monitor_with_playwright() -> None:
     if not UNI_USER or not UNI_PASS:
-        print("Set UNI_USER and UNI_PASS environment variables before running.")
+        logger.error("Set UNI_USER and UNI_PASS environment variables before running.")
         sys.exit(1)
 
     with sync_playwright() as playwright:
@@ -713,7 +722,7 @@ def monitor_with_playwright() -> None:
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    print(f"Navigating to grades URL (Attempt {attempt + 1}/{max_retries})...")
+                    logger.info(f"Navigating to grades URL (Attempt {attempt + 1}/{max_retries})...")
                     # Relaxed wait condition to domcontentloaded to avoid timeouts on network idle
                     page.goto(GRADES_URL, wait_until="domcontentloaded", timeout=60000)
                     
@@ -729,11 +738,11 @@ def monitor_with_playwright() -> None:
                             timeout=30000
                         )
                     except PWTimeout:
-                        print("Warning: Timeout waiting for initial page elements. Proceeding anyway...")
+                        logger.warning("Warning: Timeout waiting for initial page elements. Proceeding anyway...")
 
                     break # Success
                 except Exception as e:
-                    print(f"Navigation failed on attempt {attempt + 1}: {e}")
+                    logger.warning(f"Navigation failed on attempt {attempt + 1}: {e}")
                     if attempt == max_retries - 1:
                         raise e
                     page.wait_for_timeout(5000) # Wait before retry
@@ -758,21 +767,24 @@ def monitor_with_playwright() -> None:
             selector_counts = {key: page.locator(sel).count() for key, sel in login_selectors.items()}
             need_login = any(count > 0 for count in selector_counts.values())
             url_login = "nidp" in page.url or "edp_login" in page.url
-            print(f"[login] url={page.url} need_login={need_login} selector_counts={selector_counts} url_login={url_login}")
+            logger.debug(f"[login] url={page.url} need_login={need_login} selector_counts={selector_counts} url_login={url_login}")
 
             if need_login or url_login or True:
-                print("[login] entering login flow")
+                logger.info("[login] entering login flow")
                 taunidp_login(page, UNI_USER, UNI_PASS, UNI_ID)
                 try:
                     page.wait_for_load_state("networkidle", timeout=60000)
                 except PWTimeout:
                     pass
                 
-                print("Navigating to grades URL after login...")
+                logger.info("Navigating to grades URL after login...")
                 try:
                     page.goto(GRADES_URL, wait_until="domcontentloaded", timeout=60000)
                 except Exception as e:
-                    print(f"Navigation warning (handled): {e}")
+                    if "net::ERR_ABORTED" in str(e):
+                        logger.debug(f"Navigation warning (handled, likely benign): {e}")
+                    else:
+                        logger.warning(f"Navigation warning (handled): {e}")
 
                 try:
                     page.wait_for_function(
@@ -780,14 +792,17 @@ def monitor_with_playwright() -> None:
                         timeout=30000
                     )
                 except PWTimeout:
-                    print("Warning: Timeout waiting for table after login. Proceeding...")
+                    logger.warning("Warning: Timeout waiting for table after login. Proceeding...")
             else:
-                print("[login] already authenticated")
+                logger.info("[login] already authenticated")
                 # Same here: relax wait condition
                 try:
                     page.goto(GRADES_URL, wait_until="domcontentloaded", timeout=60000)
                 except Exception as e:
-                    print(f"Navigation warning (handled): {e}")
+                    if "net::ERR_ABORTED" in str(e):
+                        logger.debug(f"Navigation warning (handled, likely benign): {e}")
+                    else:
+                        logger.warning(f"Navigation warning (handled): {e}")
 
                 try:
                     page.wait_for_function(
@@ -795,7 +810,7 @@ def monitor_with_playwright() -> None:
                         timeout=30000
                     )
                 except PWTimeout:
-                    print("Warning: Timeout waiting for table (already auth). Proceeding...")
+                    logger.warning("Warning: Timeout waiting for table (already auth). Proceeding...")
 
             # bypass_intro(page)
 
@@ -806,34 +821,35 @@ def monitor_with_playwright() -> None:
                 if user_menu_btn.count() > 0:
                     # Check if we are in English mode (e.g. "My Grades" exists or similar English text)
                     # Or simply check if the "עברית" option is available in the menu
-                    print("[language] Checking language settings...")
+                    logger.debug("[language] Checking language settings...")
                     user_menu_btn.first.click()
                     page.wait_for_timeout(1000) # Wait for menu animation
                     
                     # Look for Hebrew option in the menu
                     hebrew_option = page.locator("span:has-text('עברית')")
                     if hebrew_option.count() > 0 and hebrew_option.first.is_visible():
-                        print("[language] Found Hebrew option, switching language...")
+                        logger.info("[language] Found Hebrew option, switching language...")
                         hebrew_option.first.click()
                         page.wait_for_load_state("networkidle", timeout=60000)
                     else:
-                        print("[language] Hebrew option not found or already in Hebrew.")
+                        logger.info("[language] Hebrew option not found or already in Hebrew.")
                         # Close menu if it was opened and no action taken
                         page.keyboard.press("Escape")
                 else:
-                     print("[language] User menu button not found.")
+                     logger.warning("[language] User menu button not found.")
 
             except Exception as e:
-                print(f"[language] Error checking/switching language: {e}")
+                logger.warning(f"[language] Error checking/switching language: {e}")
 
-            print("Waiting for page to stabilize...")
+            logger.info("Waiting for page to stabilize...")
             page.wait_for_timeout(2000)
             apply_default_filters(page)
             try:
                 page.wait_for_selector(TABLE_SELECTOR, timeout=45000)
             except PWTimeout:
-                print("Grade table selector not found within timeout.")
+                logger.warning("Grade table selector not found within timeout.")
             exams = extract_exam_details(page)
+            logger.info(f"Found {len(exams)} grades via Playwright.")
             if not exams:
                 save_debug_to_gcs(page, tag="no_rows")
                 _send_telegram_message(
@@ -851,7 +867,7 @@ def monitor_with_playwright() -> None:
             changes = get_changes(current=current_dict, previous=previous)
 
             if changes:
-                print(f"{len(changes)} changes detected compared to cache.")
+                logger.info(f"{len(changes)} changes detected compared to cache.")
                 save_cache_to_gcs(current_dict, CACHE_FILE_NAME)
                 send_notification(changes)
 
@@ -860,13 +876,13 @@ def monitor_with_playwright() -> None:
                 if macrodroid_url:
                     try:
                         import requests
-                        print("Triggering MacroDroid webhook...")
+                        logger.info("Triggering MacroDroid webhook...")
                         requests.get(macrodroid_url, timeout=5)
-                        print("MacroDroid webhook triggered successfully.")
+                        logger.info("MacroDroid webhook triggered successfully.")
                     except Exception as e:
-                        print(f"Failed to trigger MacroDroid webhook: {e}")
+                        logger.error(f"Failed to trigger MacroDroid webhook: {e}")
             else:
-                print("No changes vs cache.")
+                logger.info("No changes vs cache.")
         finally:
             if context:
                 context.close()
@@ -877,10 +893,10 @@ def monitor_with_playwright() -> None:
 def monitor_with_ims() -> None:
     """Fetches grades using the IMS API and notifies of changes."""
     if not all([UNI_USER, UNI_ID, UNI_PASS]):
-        print("IMS credentials (UNI_USER, UNI_ID, UNI_PASS) not set. Skipping.")
+        logger.warning("IMS credentials (UNI_USER, UNI_ID, UNI_PASS) not set. Skipping.")
         return
 
-    print("Fetching grades via IMS API...")
+    logger.info("Fetching grades via IMS API...")
     from requests import exceptions as requests_exceptions
 
     verify_setting, verify_enabled = _resolve_ims_verify_setting()
@@ -890,7 +906,7 @@ def monitor_with_ims() -> None:
         ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS, verify_ssl=verify_setting)
     except (requests_exceptions.SSLError, OSError) as exc:
         if verify_enabled:
-            print(f"IMS SSL verification failed ({exc}). Retrying with verification disabled.")
+            logger.warning(f"IMS SSL verification failed ({exc}). Retrying with verification disabled.")
             verify_enabled = False
             fallback_used = True
             ims = IMS(username=UNI_USER, id=UNI_ID, password=UNI_PASS, verify_ssl=False)
@@ -906,9 +922,9 @@ def monitor_with_ims() -> None:
     # Sort for consistency
     current_grades.sort(key=lambda g: (g.semester, g.course_id))
     
-    print(f"Found {len(current_grades)} grades via IMS.")
+    logger.info(f"Found {len(current_grades)} grades via IMS.")
     if not current_grades:
-        print("No grades found via IMS. Sending notification and skipping.")
+        logger.warning("No grades found via IMS. Sending notification and skipping.")
         _send_telegram_message(
             "🟡 Grade Notifier Alert 🟡\n\n"
             "IMS API fetch finished, but no grades were found.\n\n"
@@ -926,7 +942,7 @@ def monitor_with_ims() -> None:
     changes = get_ims_changes(current_grades, previous_grades)
 
     if changes:
-        print(f"{len(changes)} changes detected in IMS grades.")
+        logger.info(f"{len(changes)} changes detected in IMS grades.")
         
         # Fetch course names for user-friendly notifications
         course_names = fetch_course_names()
@@ -943,13 +959,13 @@ def monitor_with_ims() -> None:
         if macrodroid_url:
             try:
                 import requests
-                print("Triggering MacroDroid webhook...")
+                logger.info("Triggering MacroDroid webhook...")
                 requests.get(macrodroid_url, timeout=5)
-                print("MacroDroid webhook triggered successfully.")
+                logger.info("MacroDroid webhook triggered successfully.")
             except Exception as e:
-                print(f"Failed to trigger MacroDroid webhook: {e}")
+                logger.error(f"Failed to trigger MacroDroid webhook: {e}")
     else:
-        print("No changes in IMS grades vs cache.")
+        logger.info("No changes in IMS grades vs cache.")
 
     if fallback_used:
         warning = (
@@ -957,7 +973,7 @@ def monitor_with_ims() -> None:
             "IMS monitor had to disable SSL verification after the initial attempt failed.\n"
             "Please refresh the IMS_CA_BUNDLE or trust store to restore full TLS verification."
         )
-        print("IMS monitor completed with SSL verification disabled after fallback.")
+        logger.warning("IMS monitor completed with SSL verification disabled after fallback.")
         _send_telegram_message(warning)
 
 
@@ -970,12 +986,12 @@ def run() -> None:
     
     for name, monitor_func in monitors.items():
         try:
-            print(f"--- Running {name} Monitor ---")
+            logger.info(f"--- Running {name} Monitor ---")
             monitor_func()
-            print(f"--- {name} Monitor Finished ---")
+            logger.info(f"--- {name} Monitor Finished ---")
         except Exception as e:
-            print(f"--- {name} Monitor Failed ---")
-            print(f"An error occurred in {name} monitor: {e}")
+            logger.error(f"--- {name} Monitor Failed ---")
+            logger.error(f"An error occurred in {name} monitor: {e}")
             _send_telegram_message(
                 f"🔴 Grade Notifier CRITICAL 🔴\n\n"
                 f"The *{name} monitor* failed with an error:\n\n"
@@ -990,7 +1006,7 @@ def main(request):
         run()
         return "Script executed successfully.", 200
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
         _send_telegram_message(
             f"🔴 Grade Notifier CRITICAL 🔴\n\n"
             f"The script failed with an unhandled error:\n\n"
