@@ -656,35 +656,50 @@ def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms:
 def apply_default_filters(page) -> None:
     """Clear default calendar filters so all grades are visible."""
     try:
-        page.wait_for_timeout(2000)  # Wait a bit for filters to be interactive
-
         # The correct selector for the 'x' button, found via inspection.
         # The element is a <span> with role="button".
         remove_button_selector = ".vscomp-value-tag-clear-button"
         
-        remove_buttons = page.locator(remove_button_selector)
-        count = remove_buttons.count()
+        # Run the clearing logic multiple times to handle lazy loading/re-appearing filters
+        # The user noted there are usually 2 filters, and they might load slowly.
+        for round_idx in range(3):
+            logger.debug(f"Filter clearing round {round_idx + 1}/3...")
+            
+            # Initial wait for this round to let elements settle/appear
+            page.wait_for_timeout(2000)
 
-        if count > 0:
-            logger.debug(f"Found {count} filter remove buttons to click.")
-            # Iterate backwards to safely handle DOM changes while clicking.
-            for i in range(count - 1, -1, -1):
+            # Inner loop: clear all currently visible buttons
+            # We limit this to avoid infinite loops if a button is unclickable
+            for _ in range(5): 
+                # Re-query every time to avoid stale elements
+                remove_buttons = page.locator(remove_button_selector)
+                count = remove_buttons.count()
+                
+                if count == 0:
+                    logger.debug("No filter remove buttons found in this check.")
+                    break
+                    
+                logger.debug(f"Found {count} filter remove buttons. Clicking the first one...")
                 try:
-                    remove_buttons.nth(i).click(timeout=5000)
-                    page.wait_for_timeout(500)  # Brief pause after click.
+                    # Click the first one
+                    remove_buttons.first.click(timeout=5000)
+                    # Wait for the UI to react (table refresh)
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                    page.wait_for_timeout(500) 
                 except Exception as e:
-                    logger.warning(f"Could not click filter remove button at index {i}: {e}")
-        else:
-            logger.debug("No filter remove buttons found. Filters may already be clear.")
+                    logger.warning(f"Error clicking filter button: {e}")
+                    page.wait_for_timeout(1000)
+            
+            # After a round of clearing, we loop back to wait and check again
+            # in case new filters appeared or the table refreshed with defaults.
 
-        # After clearing filters, the table should refresh.
-        # We wait for the network to be idle to ensure the data is updated.
-        page.wait_for_load_state("networkidle", timeout=45000)
-        logger.debug("Network is idle after attempting to clear filters.")
+        # Final check/wait
+        try:
+            page.wait_for_load_state("networkidle", timeout=45000)
+            logger.debug("Network is idle after filter clearing rounds.")
+        except PWTimeout:
+            logger.warning("Timeout waiting for network idle after clearing filters.")
 
-    except PWTimeout:
-        logger.warning("Timeout waiting for network idle after attempting to clear filters.")
-        pass
     except Exception as exc:
         logger.error(f"An error occurred during filter clearing: {exc}")
 
@@ -864,6 +879,16 @@ def monitor_with_playwright() -> None:
             #print_preview(current_dict)
 
             previous = load_cache_from_gcs(CACHE_FILE_NAME)
+            
+            # Check for potential data loss (fewer records than cache)
+            if len(current_dict) < len(previous):
+                 logger.warning(f"Fetched {len(current_dict)} records, but cache has {len(previous)}. Sending warning.")
+                 _send_telegram_message(
+                    f"⚠️ *Possible Data Loss Warning* ⚠️\n\n"
+                    f"Fetched {len(current_dict)} records, but cache has {len(previous)} records.\n"
+                    f"This might indicate a scraping failure or partial load.",
+                    parse_mode="Markdown"
+                 )
             changes = get_changes(current=current_dict, previous=previous)
 
             if changes:
