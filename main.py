@@ -543,7 +543,7 @@ def taunidp_login(page, user: str, pwd: str, national_id: str = "", max_wait_ms:
         """,
         timeout=max_wait_ms,
     )
-    print("searching usename input")
+    print("searching username input")
 
     user_loc = None
     user_selector_used = None
@@ -692,6 +692,7 @@ def monitor_with_playwright() -> None:
             context_kwargs = {
                 "viewport": DESKTOP_VIEWPORT,
                 "user_agent": DESKTOP_USER_AGENT,
+                #"locale": "he-IL",
             }
             if USE_PERSISTENT_CONTEXT:
                 context = playwright.chromium.launch_persistent_context(
@@ -739,6 +740,35 @@ def monitor_with_playwright() -> None:
 
             # bypass_intro(page)
 
+            # Check for English interface and switch to Hebrew if needed
+            try:
+                # Look for the user menu button
+                user_menu_btn = page.locator("div.username-badge")
+                if user_menu_btn.count() > 0:
+                    # Check if we are in English mode (e.g. "My Grades" exists or similar English text)
+                    # Or simply check if the "עברית" option is available in the menu
+                    print("[language] Checking language settings...")
+                    user_menu_btn.first.click()
+                    page.wait_for_timeout(1000) # Wait for menu animation
+                    
+                    # Look for Hebrew option in the menu
+                    hebrew_option = page.locator("span:has-text('עברית')")
+                    if hebrew_option.count() > 0 and hebrew_option.first.is_visible():
+                        print("[language] Found Hebrew option, switching language...")
+                        hebrew_option.first.click()
+                        page.wait_for_load_state("networkidle", timeout=60000)
+                    else:
+                        print("[language] Hebrew option not found or already in Hebrew.")
+                        # Close menu if it was opened and no action taken
+                        page.keyboard.press("Escape")
+                else:
+                     print("[language] User menu button not found.")
+
+            except Exception as e:
+                print(f"[language] Error checking/switching language: {e}")
+
+            print("Waiting for page to stabilize...")
+            page.wait_for_timeout(2000)
             apply_default_filters(page)
             try:
                 page.wait_for_selector(TABLE_SELECTOR, timeout=45000)
