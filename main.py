@@ -709,9 +709,43 @@ def monitor_with_playwright() -> None:
 
             page = context.new_page()
             # page.goto(PORTAL_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
-            page.goto(GRADES_URL, wait_until="networkidle", timeout=60000)
+            # Retry logic for navigation
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    print(f"Navigating to grades URL (Attempt {attempt + 1}/{max_retries})...")
+                    # Relaxed wait condition to domcontentloaded to avoid timeouts on network idle
+                    page.goto(GRADES_URL, wait_until="domcontentloaded", timeout=60000)
+                    
+                    # Explicitly wait for something meaningful instead of generic network idle
+                    # We wait for either the table or the login inputs to appear
+                    try:
+                        page.wait_for_function(
+                            f"""
+                            () => !!document.querySelector('{TABLE_SELECTOR}') || 
+                                  !!document.querySelector('input[name="user_name"]') ||
+                                  !!document.querySelector('#IntroContainer')
+                            """,
+                            timeout=30000
+                        )
+                    except PWTimeout:
+                        print("Warning: Timeout waiting for initial page elements. Proceeding anyway...")
+
+                    break # Success
+                except Exception as e:
+                    print(f"Navigation failed on attempt {attempt + 1}: {e}")
+                    if attempt == max_retries - 1:
+                        raise e
+                    page.wait_for_timeout(5000) # Wait before retry
+
             bypass_intro(page)
-            page.wait_for_load_state("networkidle", timeout=60000)
+            
+            # We still want to wait for network idle if possible, but don't fail hard on it
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except PWTimeout:
+                pass
+            
             bypass_intro(page)
             
 
@@ -733,10 +767,35 @@ def monitor_with_playwright() -> None:
                     page.wait_for_load_state("networkidle", timeout=60000)
                 except PWTimeout:
                     pass
-                page.goto(GRADES_URL, wait_until="networkidle", timeout=60000)
+                
+                print("Navigating to grades URL after login...")
+                try:
+                    page.goto(GRADES_URL, wait_until="domcontentloaded", timeout=60000)
+                except Exception as e:
+                    print(f"Navigation warning (handled): {e}")
+
+                try:
+                    page.wait_for_function(
+                        f"() => !!document.querySelector('{TABLE_SELECTOR}')",
+                        timeout=30000
+                    )
+                except PWTimeout:
+                    print("Warning: Timeout waiting for table after login. Proceeding...")
             else:
                 print("[login] already authenticated")
-                page.goto(GRADES_URL, wait_until="networkidle", timeout=60000)
+                # Same here: relax wait condition
+                try:
+                    page.goto(GRADES_URL, wait_until="domcontentloaded", timeout=60000)
+                except Exception as e:
+                    print(f"Navigation warning (handled): {e}")
+
+                try:
+                    page.wait_for_function(
+                        f"() => !!document.querySelector('{TABLE_SELECTOR}')",
+                        timeout=30000
+                    )
+                except PWTimeout:
+                    print("Warning: Timeout waiting for table (already auth). Proceeding...")
 
             # bypass_intro(page)
 
