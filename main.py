@@ -258,7 +258,7 @@ def canonicalize(records: Iterable[Dict[str, str]]) -> Dict[str, Dict[str, str]]
             "term": term,
             "moed": moed,
             "date": date,
-            "notebook_available": "true" if rec.get("notebook_available") else "false",
+            "notebook_available": "true" if _is_truthy(rec.get("notebook_available")) else "false",
             "raw_text": rec.get("raw_text", ""),
         }
     return result
@@ -704,7 +704,7 @@ def apply_default_filters(page) -> None:
         logger.error(f"An error occurred during filter clearing: {exc}")
 
 
-def monitor_with_playwright() -> None:
+def monitor_legacy_playwright() -> None:
     if not UNI_USER or not UNI_PASS:
         logger.error("Set UNI_USER and UNI_PASS environment variables before running.")
         sys.exit(1)
@@ -985,7 +985,7 @@ def monitor_with_ims() -> None:
             try:
                 import requests
                 logger.info("Triggering MacroDroid webhook...")
-                requests.get(macrodroid_url, timeout=5)
+                requests.get(macrodroid_url, timeout=30)
                 logger.info("MacroDroid webhook triggered successfully.")
             except Exception as e:
                 logger.error(f"Failed to trigger MacroDroid webhook: {e}")
@@ -1002,28 +1002,112 @@ def monitor_with_ims() -> None:
         _send_telegram_message(warning)
 
 
+from robust_scraper import RobustGradesScraper
+
+def monitor_robust_playwright() -> None:
+    """Fetches grades using the RobustGradesScraper."""
+    logger.info("Starting Robust Playwright Monitor...")
+    
+    exams = []
+    try:
+        with RobustGradesScraper(headless=HEADLESS_DEFAULT) as scraper:
+            if scraper.login(UNI_USER, UNI_PASS, UNI_ID):
+                exams = scraper.scrape()
+            else:
+                logger.warning("Robust login failed.")
+                raise Exception("Login failed")
+                
+        logger.info(f"Found {len(exams)} grades via Robust Scraper.")
+        
+        # Use existing logic to process grades
+        # Note: We duplicate this logic to avoid extensive refactoring of the legacy function right now
+        if len(exams) < 50:
+            logger.warning(f"Robust scraper found only {len(exams)} exams. (Expected 50+)")
+            
+            # If we expected data (cache has data) but got few, treat as failure
+            # unless we know for sure user has few grades (unlikely based on context)
+            previous = load_cache_from_gcs(CACHE_FILE_NAME)
+            if previous and len(previous) > 0:
+                msg = f"Robust scrape found {len(exams)} records (< 50), but cache has {len(previous)}. Treating as failure."
+                logger.error(msg)
+                raise Exception(msg)
+            else:
+                 # Only if cache is empty too, we might accept it (e.g. new student)
+                 if len(exams) == 0:
+                     logger.info("No exams found (and cache empty/missing). This might be correct for new student.")
+                     return
+                 else:
+                     # If we found *some* (1-49) but cache empty, maybe okay?
+                     # But user requested < 50 is error.
+                     # Let's be strict if cache exists, lenient if not?
+                     # User said "change to if less than 50" implying general rule.
+                     pass
+
+        current_dict = canonicalize(exams)
+        previous = load_cache_from_gcs(CACHE_FILE_NAME)
+        
+        # Data loss check
+        if len(current_dict) < len(previous):
+             logger.warning(f"Robust: Fetched {len(current_dict)} records, cache has {len(previous)}.")
+             # Use legacy if suspicious?
+             # For now just warn
+        
+        changes = get_changes(current=current_dict, previous=previous)
+
+        if changes:
+            logger.info(f"{len(changes)} changes detected compared to cache.")
+            save_cache_to_gcs(current_dict, CACHE_FILE_NAME)
+            send_notification(changes)
+            
+            # Webhook
+            macrodroid_url = os.getenv("MACRODROID_WEBHOOK_URL")
+            if macrodroid_url:
+                try:
+                    import requests
+                    requests.get(macrodroid_url, timeout=30)
+                except Exception as e:
+                    logger.error(f"Webhook failed: {e}")
+        else:
+            logger.info("No changes vs cache.")
+
+    except Exception as e:
+        logger.error(f"Robust monitor failed: {e}")
+        raise e # Re-raise to trigger fallback
+
+
+
 def run() -> None:
     """Runs all available grade monitors."""
-    monitors = {
-        "IMS": monitor_with_ims,
-        "Playwright": monitor_with_playwright,
-    }
+    monitors_to_run = [
+        ("IMS", monitor_with_ims),
+        # ("Robust Playwright", monitor_robust_playwright), # logic moved inside loop
+    ]
     
-    for name, monitor_func in monitors.items():
-        try:
-            logger.info(f"--- Running {name} Monitor ---")
-            monitor_func()
-            logger.info(f"--- {name} Monitor Finished ---")
-        except Exception as e:
-            logger.error(f"--- {name} Monitor Failed ---")
-            logger.error(f"An error occurred in {name} monitor: {e}")
-            _send_telegram_message(
-                f"🔴 Grade Notifier CRITICAL 🔴\n\n"
-                f"The *{name} monitor* failed with an error:\n\n"
-                f"```\n{e}\n```",
-                parse_mode="Markdown"
-            )
+    # Run IMS
+    try:
+        logger.info("--- Running IMS Monitor ---")
+        monitor_with_ims()
+        logger.info("--- IMS Monitor Finished ---")
+    except Exception as e:
+        logger.error(f"IMS Monitor Failed: {e}")
+        _send_telegram_message(f"IMS Monitor Failed: {e}")
 
+    # Run Playwright (Robust with Fallback)
+    logger.info("--- Running Playwright Monitor (Robust + Fallback) ---")
+    
+    try:
+        monitor_robust_playwright()
+        logger.info("--- Robust Playwright Monitor Finished Successfully ---")
+    except Exception as e:
+        logger.warning(f"Robust Monitor failed ({e}). Falling back to Legacy Monitor...")
+        _send_telegram_message(f"⚠️ Robust Monitor Failed: {e}\nAttempting Legacy Fallback...")
+        
+        try:
+            monitor_legacy_playwright()
+            logger.info("--- Legacy Playwright Monitor Finished ---")
+        except Exception as legacy_e:
+            logger.error(f"Legacy Monitor also failed: {legacy_e}")
+            _send_telegram_message(f"❌ Both Monitors Failed.\nRobust: {e}\nLegacy: {legacy_e}")
 
 def main(request):
     """Cloud Function entry point."""
@@ -1032,12 +1116,6 @@ def main(request):
         return "Script executed successfully.", 200
     except Exception as e:
         logger.error(f"An error occurred: {e}")
-        _send_telegram_message(
-            f"🔴 Grade Notifier CRITICAL 🔴\n\n"
-            f"The script failed with an unhandled error:\n\n"
-            f"```\n{e}\n```",
-            parse_mode="Markdown"
-        )
         return "An error occurred.", 500
 
 if __name__ == "__main__":

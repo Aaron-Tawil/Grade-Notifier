@@ -10,3 +10,15 @@ tests/
 deploy.py
 venv/
 __pycache__/
+
+# Non-production scripts
+verify_robust_scraper.py
+gcs_credentials.json
+
+# Documentation/Artifacts
+AGENTS.md
+gemini.md
+scraped_exams.json
+debug_*.html
+debug_*.png
+debug_*.txt
