@@ -1005,8 +1005,8 @@ def monitor_with_ims() -> None:
 def run() -> None:
     """Runs all available grade monitors."""
     monitors = {
-        "Playwright": monitor_with_playwright,
         "IMS": monitor_with_ims,
+        "Playwright": monitor_with_playwright,
     }
     
     for name, monitor_func in monitors.items():
