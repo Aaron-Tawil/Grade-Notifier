@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from datetime import datetime
+from typing import Any
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -24,11 +25,57 @@ class GradeFetcher:
         self.context = None
         self.page = None
 
+    @staticmethod
+    def _load_credentials() -> tuple[str, str, str]:
+        user = os.environ.get("UNI_USER", "").strip()
+        password = os.environ.get("UNI_PASS", "").strip()
+        user_id = os.environ.get("UNI_ID", "").strip()
+
+        missing = []
+        if not user:
+            missing.append("UNI_USER")
+        if not password:
+            missing.append("UNI_PASS")
+        if not user_id:
+            missing.append("UNI_ID")
+
+        if missing:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+        return user, password, user_id
+
+    @staticmethod
+    def _get_val(payload: dict[str, Any], key: str) -> str:
+        return str(payload.get(key) or "").strip()
+
+    @staticmethod
+    def _has_notebook_file(payload: dict[str, Any]) -> bool:
+        return str(payload.get("ScanStatus") or "").strip().lower() == "file"
+
+    @staticmethod
+    def _normalize_api_date(raw: str) -> str:
+        if not raw:
+            return ""
+        candidate = raw.split("T", 1)[0]
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%Y-%m-%d %H:%M" if "%H" in fmt else "%Y-%m-%d")
+            except ValueError:
+                continue
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(candidate, fmt)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        return candidate
+
     def fetch_grades(self):
         """
         Launches browser, logs in, intercepts grade data, and returns it.
         """
         logger.info("Starting GradeFetcher...")
+        username, password, user_id = self._load_credentials()
         
         # Manually start Playwright to control lifecycle
         self.playwright = sync_playwright().start()
@@ -61,7 +108,7 @@ class GradeFetcher:
                         break
 
                     # 2. Check for Login
-                    self._handle_login(page)
+                    self._handle_login(page, username, password, user_id)
 
                     # 3. Check for Intro
                     self._handle_intro(page)
@@ -75,7 +122,7 @@ class GradeFetcher:
                     # Take a screenshot for debugging if failed
                     try: page.screenshot(path="fetch_failure.png")
                     except: pass
-                    raise TimeoutError("Timed out waiting for grade data (60s)")
+                    raise PlaywrightTimeoutError("Timed out waiting for grade data (60s)")
 
             except Exception as e:
                 logger.error(f"Error during fetch: {e}")
@@ -104,19 +151,42 @@ class GradeFetcher:
         """
         Callback for network responses. Captures JSON from the target DataAction.
         """
-        try:
-            if self.DATA_ACTION_URL_PART in response.url and "Filters" not in response.url and response.status == 200:
-                logger.info(f"Intercepted target response: {response.url}")
-                data = response.json()
-                # Basic validation
-                if "data" in data and "ExamsAndTasksLis" in data["data"]:
-                    self.fetched_data = data["data"]["ExamsAndTasksLis"]["List"]
-                    logger.info(f"Captured {len(self.fetched_data)} grade records.")
-        except Exception as e:
-            # Ignore parsing errors for non-JSON or irrelevant responses
-            pass
+        if not (
+            self.DATA_ACTION_URL_PART in response.url
+            and "Filters" not in response.url
+            and response.status == 200
+        ):
+            return
 
-    def _handle_login(self, page):
+        logger.info(f"Intercepted target response: {response.url}")
+        try:
+            data = response.json()
+        except Exception as exc:
+            logger.warning(
+                f"Failed to parse grade API response JSON (status={response.status}, url={response.url}): {exc}"
+            )
+            return
+
+        if not isinstance(data, dict):
+            logger.warning(f"Unexpected grade API payload type: {type(data).__name__} (url={response.url})")
+            return
+
+        exams_list = (
+            data.get("data", {})
+            .get("ExamsAndTasksLis", {})
+            .get("List")
+        )
+        if not isinstance(exams_list, list):
+            logger.warning(
+                "Grade API payload missing expected path data.ExamsAndTasksLis.List "
+                f"(url={response.url}, top_keys={list(data.keys())[:10]})"
+            )
+            return
+
+        self.fetched_data = exams_list
+        logger.info(f"Captured {len(self.fetched_data)} grade records.")
+
+    def _handle_login(self, page, username: str, password: str, user_id: str):
         """
         Handles the login flow if redirected to the login page.
         """
@@ -127,18 +197,18 @@ class GradeFetcher:
                 
                 # Standard portal login
                 if page.locator("input[name='txtUser']").count() > 0:
-                    page.fill("input[name='txtUser']", os.environ["UNI_USER"])
-                    page.fill("input[name='txtPass']", os.environ["UNI_PASS"])
-                    page.fill("input[name='txtId']", os.environ["UNI_ID"])
+                    page.fill("input[name='txtUser']", username)
+                    page.fill("input[name='txtPass']", password)
+                    page.fill("input[name='txtId']", user_id)
                     try: page.check("input[type='checkbox']", timeout=1000)
                     except: pass
                     page.click("button[type='submit']")
 
                 # Alternative login form 1
                 elif page.locator("input[name='user_name']").count() > 0:
-                    page.fill("input[name='user_name']", os.environ["UNI_USER"])
-                    page.fill("input[name='id_number']", os.environ["UNI_ID"])
-                    page.fill("input[name='password']", os.environ["UNI_PASS"])
+                    page.fill("input[name='user_name']", username)
+                    page.fill("input[name='id_number']", user_id)
+                    page.fill("input[name='password']", password)
                     
                     submit_clicked = False
                     for selector in ["button[type='submit']", "input[type='submit']", "button:has-text('כניסה')", "button:has-text('Login')"]:
@@ -153,15 +223,13 @@ class GradeFetcher:
                 
                 # Alternative login form 2 (Ecom)
                 elif page.locator("input[name='Ecom_User_ID']").count() > 0:
-                    page.fill("input[name='Ecom_User_ID']", os.environ["UNI_USER"])
-                    page.fill("input[name='Ecom_User_Pid']", os.environ["UNI_ID"])
-                    page.fill("input[name='Ecom_Password']", os.environ["UNI_PASS"])
+                    page.fill("input[name='Ecom_User_ID']", username)
+                    page.fill("input[name='Ecom_User_Pid']", user_id)
+                    page.fill("input[name='Ecom_Password']", password)
                     page.click("button[name='loginButton2']")
 
                 page.wait_for_load_state("networkidle")
                 logger.info("Login submitted.")
-            else:
-                logger.info("No login form detected (already logged in?).")
         except Exception as e:
             logger.warning(f"Login handler exception: {e}")
 
@@ -214,61 +282,18 @@ class GradeFetcher:
         dropped_without_course = 0
         for item in raw_data:
             try:
-                # Helper to safely get string values
-                def get_val(key):
-                    return str(item.get(key) or "").strip()
-
-                def looks_like_file_reference(raw: object) -> bool:
-                    if raw is None:
-                        return False
-                    value = str(raw).strip()
-                    if not value:
-                        return False
-                    lowered = value.lower()
-                    if lowered in {"-", "--", "none", "null", "false", "0"}:
-                        return False
-                    return any(token in lowered for token in (".pdf", ".doc", ".docx", ".zip", "download", "/"))
-
-                def has_notebook_file(payload: dict) -> bool:
-                    # The API often includes placeholder scan fields.
-                    # Use a strict rule to avoid false positives:
-                    # 1) status must explicitly indicate file
-                    # 2) at least one file reference must look real
-                    scan_status = str(payload.get("ScanStatus") or "").strip().lower()
-                    if scan_status != "file":
-                        return False
-                    return looks_like_file_reference(payload.get("File")) or looks_like_file_reference(payload.get("ScanFileName"))
-
-                def normalize_api_date(raw: str) -> str:
-                    if not raw:
-                        return ""
-                    candidate = raw.split("T", 1)[0]
-                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"):
-                        try:
-                            dt = datetime.strptime(raw, fmt)
-                            return dt.strftime("%Y-%m-%d %H:%M" if "%H" in fmt else "%Y-%m-%d")
-                        except ValueError:
-                            continue
-                    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
-                        try:
-                            dt = datetime.strptime(candidate, fmt)
-                            return dt.strftime("%Y-%m-%d")
-                        except ValueError:
-                            continue
-                    return candidate
-
                 record = {
-                    "course": get_val("CourseDescription") or get_val("Course"),
-                    "grade": get_val("FinalGrade"),
-                    "moed": get_val("DueDescription"),
-                    "term": get_val("AssignmentDescription"),
-                    "date": normalize_api_date(get_val("DueDate")),
+                    "course": self._get_val(item, "CourseDescription") or self._get_val(item, "Course"),
+                    "grade": self._get_val(item, "FinalGrade"),
+                    "moed": self._get_val(item, "DueDescription"),
+                    "term": self._get_val(item, "AssignmentDescription"),
+                    "date": self._normalize_api_date(self._get_val(item, "DueDate")),
                     "notebook_available": False,
                     "raw_text": "" # Optional, scraper fills it with row text
                 }
                 
                 # Notebook availability logic
-                if has_notebook_file(item):
+                if self._has_notebook_file(item):
                     record["notebook_available"] = True
 
                 # Keep every row that belongs to a course, even if grade/date is still empty.

@@ -424,7 +424,7 @@ def get_changes(current: Dict[str, Dict[str, Any]], previous: Dict[str, Dict[str
             changes[key] = (previous_value, current_value)
     return changes
 
-def _send_telegram_message(message: str, parse_mode: str = "Markdown") -> None:
+def _send_telegram_message(message: str, parse_mode: Optional[str] = "Markdown") -> None:
     """Sends a message via Telegram."""
     import requests
 
@@ -439,8 +439,9 @@ def _send_telegram_message(message: str, parse_mode: str = "Markdown") -> None:
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": parse_mode,
     }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
 
     try:
         response = requests.post(url, json=payload, timeout=10)
@@ -1105,7 +1106,10 @@ def monitor_grades_with_fallback() -> None:
             logger.warning("GradeFetcher returned 0 records.")
     except Exception as e:
         logger.error(f"GradeFetcher failed: {e}")
-        _send_telegram_message(f"⚠️ GradeFetcher (API) failed: {e}\nAttempting fallback to DOM scraper...")
+        _send_telegram_message(
+            f"⚠️ GradeFetcher (API) failed: {e}\nAttempting fallback to DOM scraper...",
+            parse_mode=None,
+        )
         # Continue to fallback
         
     # 2. Fallback to RobustGradesScraper (DOM Scraping) if needed
@@ -1176,7 +1180,7 @@ def run() -> None:
         logger.info("--- IMS Monitor Finished ---")
     except Exception as e:
         logger.error(f"IMS Monitor Failed: {e}")
-        _send_telegram_message(f"IMS Monitor Failed: {e}")
+        _send_telegram_message(f"IMS Monitor Failed: {e}", parse_mode=None)
 
     # Run Portal Monitor (API + Fallback)
     logger.info("--- Running Portal Monitor ---")
@@ -1185,7 +1189,7 @@ def run() -> None:
         logger.info("--- Portal Monitor Finished Successfully ---")
     except Exception as e:
         logger.error(f"Portal Monitor Failed: {e}")
-        _send_telegram_message(f"❌ Portal Monitor Failed: {e}")
+        _send_telegram_message(f"❌ Portal Monitor Failed: {e}", parse_mode=None)
 
 def main(request):
     """Cloud Function entry point."""
