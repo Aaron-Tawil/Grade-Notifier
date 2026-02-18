@@ -1003,86 +1003,91 @@ def monitor_with_ims() -> None:
 
 
 from robust_scraper import RobustGradesScraper
+from grade_fetcher import GradeFetcher
 
-def monitor_robust_playwright() -> None:
-    """Fetches grades using the RobustGradesScraper."""
-    logger.info("Starting Robust Playwright Monitor...")
+def monitor_grades_with_fallback() -> None:
+    """Fetches grades using GradeFetcher (API), falling back to RobustGradesScraper (DOM)."""
+    logger.info("Starting Grade Monitor (API + Fallback)...")
     
     exams = []
+    fetch_source = "None"
+    
+    # 1. Try GradeFetcher (API Interception)
     try:
-        with RobustGradesScraper(headless=HEADLESS_DEFAULT) as scraper:
-            if scraper.login(UNI_USER, UNI_PASS, UNI_ID):
-                exams = scraper.scrape()
-            else:
-                logger.warning("Robust login failed.")
-                raise Exception("Login failed")
-                
-        logger.info(f"Found {len(exams)} grades via Robust Scraper.")
-        
-        # Use existing logic to process grades
-        # Note: We duplicate this logic to avoid extensive refactoring of the legacy function right now
-        if len(exams) < 50:
-            logger.warning(f"Robust scraper found only {len(exams)} exams. (Expected 50+)")
-            
-            # If we expected data (cache has data) but got few, treat as failure
-            # unless we know for sure user has few grades (unlikely based on context)
-            previous = load_cache_from_gcs(CACHE_FILE_NAME)
-            if previous and len(previous) > 0:
-                msg = f"Robust scrape found {len(exams)} records (< 50), but cache has {len(previous)}. Treating as failure."
-                logger.error(msg)
-                raise Exception(msg)
-            else:
-                 # Only if cache is empty too, we might accept it (e.g. new student)
-                 if len(exams) == 0:
-                     logger.info("No exams found (and cache empty/missing). This might be correct for new student.")
-                     return
-                 else:
-                     # If we found *some* (1-49) but cache empty, maybe okay?
-                     # But user requested < 50 is error.
-                     # Let's be strict if cache exists, lenient if not?
-                     # User said "change to if less than 50" implying general rule.
-                     pass
-
-        current_dict = canonicalize(exams)
-        previous = load_cache_from_gcs(CACHE_FILE_NAME)
-        
-        # Data loss check
-        if len(current_dict) < len(previous):
-             logger.warning(f"Robust: Fetched {len(current_dict)} records, cache has {len(previous)}.")
-             # Use legacy if suspicious?
-             # For now just warn
-        
-        changes = get_changes(current=current_dict, previous=previous)
-
-        if changes:
-            logger.info(f"{len(changes)} changes detected compared to cache.")
-            save_cache_to_gcs(current_dict, CACHE_FILE_NAME)
-            send_notification(changes)
-            
-            # Webhook
-            macrodroid_url = os.getenv("MACRODROID_WEBHOOK_URL")
-            if macrodroid_url:
-                try:
-                    import requests
-                    requests.get(macrodroid_url, timeout=30)
-                except Exception as e:
-                    logger.error(f"Webhook failed: {e}")
+        logger.info("Attempting fetch with GradeFetcher (API)...")
+        fetcher = GradeFetcher(headless=HEADLESS_DEFAULT)
+        exams = fetcher.fetch_grades()
+        if exams:
+            fetch_source = "API"
+            logger.info(f"GradeFetcher returned {len(exams)} records.")
         else:
-            logger.info("No changes vs cache.")
-
+            logger.warning("GradeFetcher returned 0 records.")
     except Exception as e:
-        logger.error(f"Robust monitor failed: {e}")
-        raise e # Re-raise to trigger fallback
+        logger.error(f"GradeFetcher failed: {e}")
+        _send_telegram_message(f"⚠️ GradeFetcher (API) failed: {e}\nAttempting fallback to DOM scraper...")
+        # Continue to fallback
+        
+    # 2. Fallback to RobustGradesScraper (DOM Scraping) if needed
+    if not exams:
+        logger.info("Falling back to RobustGradesScraper (DOM)...")
+        try:
+            with RobustGradesScraper(headless=HEADLESS_DEFAULT) as scraper:
+                if scraper.login(UNI_USER, UNI_PASS, UNI_ID):
+                    exams = scraper.scrape()
+                    if exams:
+                        fetch_source = "DOM"
+                        logger.info(f"RobustGradesScraper returned {len(exams)} records.")
+                else:
+                    logger.warning("Robust login failed.")
+                    # If both failed, we might raise an exception or just return if we want to keep running other monitors
+                    # But the caller expects exceptions for critical failures
+        except Exception as e:
+            logger.error(f"RobustGradesScraper failed: {e}")
+            # If both failed, re-raise to notify user
+            raise Exception(f"Both API and DOM fetch methods failed. Last error: {e}")
 
+    if not exams:
+        # If we still have no exams, check cache to see if this is an anomaly
+        previous = load_cache_from_gcs(CACHE_FILE_NAME)
+        if previous and len(previous) > 5: # Arbitrary threshold for "established student"
+             msg = f"Critical: No grades fetched from either source, but cache has {len(previous)} records."
+             logger.error(msg)
+             raise Exception(msg)
+        else:
+             logger.info("No grades found, and cache is empty/small. Assuming new student or no grades yet.")
+             return
+
+    # 3. Process Grades (Canonicalize & Compare)
+    current_dict = canonicalize(exams)
+    previous = load_cache_from_gcs(CACHE_FILE_NAME)
+    
+    # Data loss check (warning only)
+    if len(current_dict) < len(previous):
+         logger.warning(f"[{fetch_source}] Fetched {len(current_dict)} records, cache has {len(previous)}.")
+    
+    changes = get_changes(current=current_dict, previous=previous)
+
+    if changes:
+        logger.info(f"{len(changes)} changes detected compared to cache.")
+        save_cache_to_gcs(current_dict, CACHE_FILE_NAME)
+        send_notification(changes)
+        
+        # Trigger MacroDroid webhook
+        macrodroid_url = os.getenv("MACRODROID_WEBHOOK_URL")
+        if macrodroid_url:
+            try:
+                import requests
+                logger.info("Triggering MacroDroid webhook...")
+                requests.get(macrodroid_url, timeout=30)
+                logger.info("MacroDroid webhook triggered successfully.")
+            except Exception as e:
+                logger.error(f"Failed to trigger MacroDroid webhook: {e}")
+    else:
+        logger.info("No changes vs cache.")
 
 
 def run() -> None:
     """Runs all available grade monitors."""
-    monitors_to_run = [
-        ("IMS", monitor_with_ims),
-        # ("Robust Playwright", monitor_robust_playwright), # logic moved inside loop
-    ]
-    
     # Run IMS
     try:
         logger.info("--- Running IMS Monitor ---")
@@ -1092,22 +1097,14 @@ def run() -> None:
         logger.error(f"IMS Monitor Failed: {e}")
         _send_telegram_message(f"IMS Monitor Failed: {e}")
 
-    # Run Playwright (Robust with Fallback)
-    logger.info("--- Running Playwright Monitor (Robust + Fallback) ---")
-    
+    # Run Portal Monitor (API + Fallback)
+    logger.info("--- Running Portal Monitor ---")
     try:
-        monitor_robust_playwright()
-        logger.info("--- Robust Playwright Monitor Finished Successfully ---")
+        monitor_grades_with_fallback()
+        logger.info("--- Portal Monitor Finished Successfully ---")
     except Exception as e:
-        logger.warning(f"Robust Monitor failed ({e}). Falling back to Legacy Monitor...")
-        _send_telegram_message(f"⚠️ Robust Monitor Failed: {e}\nAttempting Legacy Fallback...")
-        
-        try:
-            monitor_legacy_playwright()
-            logger.info("--- Legacy Playwright Monitor Finished ---")
-        except Exception as legacy_e:
-            logger.error(f"Legacy Monitor also failed: {legacy_e}")
-            _send_telegram_message(f"❌ Both Monitors Failed.\nRobust: {e}\nLegacy: {legacy_e}")
+        logger.error(f"Portal Monitor Failed: {e}")
+        _send_telegram_message(f"❌ Portal Monitor Failed: {e}")
 
 def main(request):
     """Cloud Function entry point."""
