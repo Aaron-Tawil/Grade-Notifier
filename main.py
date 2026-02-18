@@ -77,8 +77,12 @@ UNI_ID = os.getenv("UNI_ID", "")
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "")
 
 
-def _is_truthy(value: str) -> bool:
-    return value.lower() in {"1", "true", "yes", "on"} if value else False
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 USE_PERSISTENT_CONTEXT = _is_truthy(os.getenv("USE_PERSISTENT_CONTEXT", ""))
@@ -122,13 +126,55 @@ def normalize_date(value: str) -> str:
     date_part = parts[0]
     time_part = parts[1] if len(parts) > 1 else ""
 
-    for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y"):
+    for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(" ".join(filter(None, [date_part, time_part])), fmt)
             return dt.strftime("%Y-%m-%d %H:%M" if "%H" in fmt else "%Y-%m-%d")
         except ValueError:
             continue
     return clean
+
+
+def _normalize_record_value(value: Any) -> str:
+    return normalize_text(str(value)) if value is not None else ""
+
+
+_MISSING_GRADE_MARKERS = {
+    "-",
+    "--",
+    "n/a",
+    "na",
+    "none",
+    "not taken",
+    "absent",
+    "לא נבחן",
+    "טרם נקלט",
+}
+_MISSING_GRADE_MARKERS_FOLDED = {marker.casefold() for marker in _MISSING_GRADE_MARKERS}
+
+
+def _normalize_grade_value(value: Any) -> str:
+    grade = _normalize_record_value(value)
+    if not grade:
+        return ""
+
+    grade_folded = grade.casefold()
+    if grade_folded in _MISSING_GRADE_MARKERS_FOLDED:
+        return ""
+    return grade
+
+
+def _normalize_date_for_compare(value: Any) -> str:
+    normalized = normalize_date(_normalize_record_value(value))
+    if not normalized:
+        return ""
+    return normalized.split(" ", 1)[0]
+
+
+def _normalize_notebook_value(value: Any, *, normalized_grade: str) -> bool:
+    if not normalized_grade:
+        return False
+    return _is_truthy(value)
 
 
 def parse_grade_row(
@@ -210,7 +256,7 @@ def extract_from_table(table_handle) -> List[Dict[str, str]]:
                 notebook_available=notebook_available,
             )
         )
-    return [rec for rec in records if any(rec.get(part) for part in ("course", "grade"))]
+    return [rec for rec in records if rec.get("course")]
 
 
 def extract_exam_details(page) -> List[Dict[str, str]]:
@@ -229,52 +275,87 @@ def extract_exam_details(page) -> List[Dict[str, str]]:
     return []
 
 
-def canonicalize(records: Iterable[Dict[str, str]]) -> Dict[str, Dict[str, str]]:
-    result: Dict[str, Dict[str, str]] = {}
+def canonicalize(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    normalized_rows: list[tuple[str, Dict[str, Any]]] = []
     for rec in records:
-        course = (rec.get("course") or "").strip()
-        moed = (rec.get("moed") or "").strip()
-        date = (rec.get("date") or "").strip()
-        grade = (rec.get("grade") or "").strip()
-        term = (rec.get("term") or "").strip()
+        course = _normalize_record_value(rec.get("course"))
+        moed = _normalize_record_value(rec.get("moed"))
+        date = _normalize_date_for_compare(rec.get("date"))
+        grade = _normalize_grade_value(rec.get("grade"))
+        term = _normalize_record_value(rec.get("term"))
+        raw_text = _normalize_record_value(rec.get("raw_text"))
 
-        base_key = course or rec.get("raw_text") or f"row_{len(result)}"
+        key_base = course or "|".join(part for part in (term, moed, date) if part) or raw_text or "row"
         if moed:
-            base_key = f"{base_key} | moed {moed}"
+            key_base = f"{key_base} | moed {moed}"
+        if date:
+            key_base = f"{key_base} | {date}"
 
-        key = base_key
-        if key in result:
-            if date and result[key].get("date") != date:
-                key = f"{base_key} | {date}"
-            else:
-                suffix = 2
-                while f"{base_key} ({suffix})" in result:
-                    suffix += 1
-                key = f"{base_key} ({suffix})"
+        normalized_rows.append(
+            (
+                key_base,
+                {
+                    "course": course,
+                    "grade": grade,
+                    "moed": moed,
+                    "date": date,
+                    "notebook_available": _normalize_notebook_value(
+                        rec.get("notebook_available"),
+                        normalized_grade=grade,
+                    ),
+                },
+            )
+        )
 
-        result[key] = {
-            "course": course,
-            "grade": grade,
-            "term": term,
-            "moed": moed,
-            "date": date,
-            "notebook_available": "true" if _is_truthy(rec.get("notebook_available")) else "false",
-            "raw_text": rec.get("raw_text", ""),
-        }
+    normalized_rows.sort(
+        key=lambda item: (
+            item[0],
+            item[1].get("course", ""),
+            item[1].get("moed", ""),
+            item[1].get("date", ""),
+            item[1].get("grade", ""),
+            str(item[1].get("notebook_available", False)),
+        )
+    )
+
+    result: Dict[str, Dict[str, Any]] = {}
+    seen_counts: Dict[str, int] = {}
+    for key_base, payload in normalized_rows:
+        count = seen_counts.get(key_base, 0) + 1
+        seen_counts[key_base] = count
+        key = key_base if count == 1 else f"{key_base} ({count})"
+        result[key] = payload
+
     return result
 
 
-def print_preview(current: Dict[str, Dict[str, str]]) -> None:
+def normalize_portal_cache(raw_cache: Any) -> Dict[str, Dict[str, Any]]:
+    """Convert cache payloads (old/new formats) into canonical portal mapping."""
+    if not raw_cache:
+        return {}
+
+    if isinstance(raw_cache, list):
+        return canonicalize(raw_cache)
+
+    if isinstance(raw_cache, dict):
+        if all(isinstance(v, dict) for v in raw_cache.values()):
+            return canonicalize(raw_cache.values())
+        if "course" in raw_cache:
+            return canonicalize([raw_cache])
+
+    logger.warning("Portal cache payload is in an unexpected format; treating as empty.")
+    return {}
+
+
+def print_preview(current: Dict[str, Dict[str, Any]]) -> None:
     logger.info("\n=== Parsed grades preview ===")
     for key, data in current.items():
         title = data.get("course") or key
         grade = data.get("grade", "")
         moed = data.get("moed", "")
-        term = data.get("term", "")
         date = data.get("date", "")
         extras = [
             f"Moed: {moed}" if moed else "",
-            f"Term: {term}" if term else "",
             f"Date: {date}" if date else "",
         ]
         extras = [item for item in extras if item]
@@ -330,13 +411,13 @@ def save_cache_to_gcs(data: Any, cache_file: str) -> None:
         logger.error(f"Error saving cache to GCS ({cache_file}): {exc}")
 
 
-def get_changes(current: Dict[str, Dict[str, str]], previous: Dict[str, Dict[str, str]]) -> Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]]:
+def get_changes(current: Dict[str, Dict[str, Any]], previous: Dict[str, Dict[str, Any]]) -> Dict[str, tuple[Optional[Dict[str, Any]], Dict[str, Any]]]:
     """Compares two dictionaries and returns a dict of changes.
 
     The value for each change is a tuple: (previous_state, current_state).
     For new items, previous_state will be None.
     """
-    changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]] = {}
+    changes: Dict[str, tuple[Optional[Dict[str, Any]], Dict[str, Any]]] = {}
     for key, current_value in current.items():
         previous_value = previous.get(key)
         if previous_value != current_value:
@@ -373,7 +454,7 @@ def _send_telegram_message(message: str, parse_mode: str = "Markdown") -> None:
         logger.error(f"--- An error occurred while sending Telegram notification: {e} ---")
 
 
-def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[str, str]]]) -> None:
+def send_notification(changes: Dict[str, tuple[Optional[Dict[str, Any]], Dict[str, Any]]]) -> None:
     """Formats the grade changes and sends a notification message via Telegram."""
     message_lines = ["🔔 *Grade Update!* 🔔"]
     for key, (previous_value, current_value) in changes.items():
@@ -392,10 +473,10 @@ def send_notification(changes: Dict[str, tuple[Optional[Dict[str, str]], Dict[st
         if old_grade != new_grade:
             change_details.append(f"Grade changed from `{old_grade}` to *{new_grade}*")
 
-        old_notebook = previous_value.get("notebook_available", "false")
-        new_notebook = current_value.get("notebook_available", "false")
+        old_notebook = _is_truthy(previous_value.get("notebook_available", False))
+        new_notebook = _is_truthy(current_value.get("notebook_available", False))
         if old_notebook != new_notebook:
-            status = "now available" if new_notebook == "true" else "no longer available"
+            status = "now available" if new_notebook else "no longer available"
             change_details.append(f"Notebook is {status}")
 
         if change_details:
@@ -878,7 +959,7 @@ def monitor_legacy_playwright() -> None:
             current_dict = canonicalize(exams)
             #print_preview(current_dict)
 
-            previous = load_cache_from_gcs(CACHE_FILE_NAME)
+            previous = normalize_portal_cache(load_cache_from_gcs(CACHE_FILE_NAME))
             
             # Check for potential data loss (fewer records than cache)
             if len(current_dict) < len(previous):
@@ -1048,7 +1129,7 @@ def monitor_grades_with_fallback() -> None:
 
     if not exams:
         # If we still have no exams, check cache to see if this is an anomaly
-        previous = load_cache_from_gcs(CACHE_FILE_NAME)
+        previous = normalize_portal_cache(load_cache_from_gcs(CACHE_FILE_NAME))
         if previous and len(previous) > 5: # Arbitrary threshold for "established student"
              msg = f"Critical: No grades fetched from either source, but cache has {len(previous)} records."
              logger.error(msg)
@@ -1059,7 +1140,7 @@ def monitor_grades_with_fallback() -> None:
 
     # 3. Process Grades (Canonicalize & Compare)
     current_dict = canonicalize(exams)
-    previous = load_cache_from_gcs(CACHE_FILE_NAME)
+    previous = normalize_portal_cache(load_cache_from_gcs(CACHE_FILE_NAME))
     
     # Data loss check (warning only)
     if len(current_dict) < len(previous):

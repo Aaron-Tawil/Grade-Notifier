@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -204,49 +205,82 @@ class GradeFetcher:
         except Exception as e:
             logger.warning(f"Intro handler exception: {e}")
 
-    def process_grades(self, raw_data: list) -> list[dict[str, str]]:
+    def process_grades(self, raw_data: list) -> list[dict[str, object]]:
         """
         Process raw API data to match the structure expected by main.py
         Returns list of dicts with keys: course, grade, moed, date, term, notebook_available
         """
         processed = []
+        dropped_without_course = 0
         for item in raw_data:
             try:
                 # Helper to safely get string values
                 def get_val(key):
                     return str(item.get(key) or "").strip()
 
+                def looks_like_file_reference(raw: object) -> bool:
+                    if raw is None:
+                        return False
+                    value = str(raw).strip()
+                    if not value:
+                        return False
+                    lowered = value.lower()
+                    if lowered in {"-", "--", "none", "null", "false", "0"}:
+                        return False
+                    return any(token in lowered for token in (".pdf", ".doc", ".docx", ".zip", "download", "/"))
+
+                def has_notebook_file(payload: dict) -> bool:
+                    # The API often includes placeholder scan fields.
+                    # Use a strict rule to avoid false positives:
+                    # 1) status must explicitly indicate file
+                    # 2) at least one file reference must look real
+                    scan_status = str(payload.get("ScanStatus") or "").strip().lower()
+                    if scan_status != "file":
+                        return False
+                    return looks_like_file_reference(payload.get("File")) or looks_like_file_reference(payload.get("ScanFileName"))
+
+                def normalize_api_date(raw: str) -> str:
+                    if not raw:
+                        return ""
+                    candidate = raw.split("T", 1)[0]
+                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"):
+                        try:
+                            dt = datetime.strptime(raw, fmt)
+                            return dt.strftime("%Y-%m-%d %H:%M" if "%H" in fmt else "%Y-%m-%d")
+                        except ValueError:
+                            continue
+                    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+                        try:
+                            dt = datetime.strptime(candidate, fmt)
+                            return dt.strftime("%Y-%m-%d")
+                        except ValueError:
+                            continue
+                    return candidate
+
                 record = {
                     "course": get_val("CourseDescription") or get_val("Course"),
                     "grade": get_val("FinalGrade"),
                     "moed": get_val("DueDescription"),
                     "term": get_val("AssignmentDescription"),
-                    "date": get_val("DueDate"), # API format seems to be YYYY-MM-DD
-                    "notebook_available": "false", 
+                    "date": normalize_api_date(get_val("DueDate")),
+                    "notebook_available": False,
                     "raw_text": "" # Optional, scraper fills it with row text
                 }
                 
                 # Notebook availability logic
-                # ScanStatus='file', File='...pdf', ScanFileName='...'
-                if item.get("ScanStatus") == "file" or item.get("File") or item.get("ScanFileName"):
-                    record["notebook_available"] = "true"
+                if has_notebook_file(item):
+                    record["notebook_available"] = True
 
-                # Normalize date if needed (scraper expects DD/MM/YYYY usually, but canonicalize handles strings)
-                # Let's try to convert to DD/MM/YYYY to be safe and consistent with scraper.
-                if record["date"]:
-                     import datetime
-                     try:
-                         dt = datetime.datetime.strptime(record["date"], "%Y-%m-%d")
-                         record["date"] = dt.strftime("%d/%m/%Y")
-                     except: pass
-
-                # Only add if essential data exists
-                if record["course"] and (record["grade"] or record["date"]):
+                # Keep every row that belongs to a course, even if grade/date is still empty.
+                if record["course"]:
                     processed.append(record)
+                else:
+                    dropped_without_course += 1
 
             except Exception as e:
                 logger.warning(f"Error processing item {item.get('Id')}: {e}")
-        
+        if dropped_without_course:
+            logger.info(f"Dropped {dropped_without_course} API rows without course name.")
         return processed
 
     def close(self):

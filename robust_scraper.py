@@ -185,7 +185,7 @@ class RobustGradesScraper:
             logger.error(f"Login failed: {e}")
             return False
 
-    def scrape(self) -> List[Dict[str, str]]:
+    def scrape(self) -> List[Dict[str, Any]]:
         """Clears filters and scrapes the table, returning structured data."""
         logger.info("Starting scrape process (Clear Filters + Extract)...")
         try:
@@ -239,9 +239,9 @@ class RobustGradesScraper:
                 if not cells: 
                     continue
 
-                record: Dict[str, str] = {
+                record: Dict[str, Any] = {
                     "course": "", "grade": "", "moed": "", "term": "", "date": "",
-                    "notebook_available": "false", "raw_text": ""
+                    "notebook_available": False, "raw_text": ""
                 }
                 
                  # Check notebook button
@@ -252,7 +252,7 @@ class RobustGradesScraper:
                      if not is_disabled:
                         # Some buttons seem to have 'empty-btn' but are still clickable/enabled.
                         # Trusting is_disabled() as primary indicator.
-                        record["notebook_available"] = "true"
+                        record["notebook_available"] = True
                         # logger.debug(f"*** Notebook FOUND for {record['course']} ***")
                      else:
                         # logger.debug(f"Notebook unavailable for {record['course']}")
@@ -269,8 +269,8 @@ class RobustGradesScraper:
                             val = normalize_date(val)
                         record[key] = val
                 
-                # Only add if it has essential data
-                if record["course"] and (record["grade"] or record["date"]):
+                # Keep every visible course row, even if grade/date is still empty.
+                if record["course"]:
                     extracted_records.append(record)
             
             logger.info(f"Extracted {len(extracted_records)} records.")
