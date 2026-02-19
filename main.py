@@ -87,6 +87,7 @@ def _is_truthy(value: Any) -> bool:
 
 USE_PERSISTENT_CONTEXT = _is_truthy(os.getenv("USE_PERSISTENT_CONTEXT", ""))
 HEADLESS_DEFAULT = not _is_truthy(os.getenv("RUN_HEADFUL", ""))
+ENABLE_IMS_MONITOR = _is_truthy(os.getenv("ENABLE_IMS_MONITOR", ""))
 
 DESKTOP_VIEWPORT = {
     "width": int(os.getenv("PLAYWRIGHT_VIEWPORT_WIDTH", "1600")),
@@ -1173,14 +1174,17 @@ def monitor_grades_with_fallback() -> None:
 
 def run() -> None:
     """Runs all available grade monitors."""
-    # Run IMS
-    try:
-        logger.info("--- Running IMS Monitor ---")
-        monitor_with_ims()
-        logger.info("--- IMS Monitor Finished ---")
-    except Exception as e:
-        logger.error(f"IMS Monitor Failed: {e}")
-        _send_telegram_message(f"IMS Monitor Failed: {e}", parse_mode=None)
+    # Run IMS (disabled by default; opt-in with ENABLE_IMS_MONITOR=1)
+    if ENABLE_IMS_MONITOR:
+        try:
+            logger.info("--- Running IMS Monitor ---")
+            monitor_with_ims()
+            logger.info("--- IMS Monitor Finished ---")
+        except Exception as e:
+            logger.error(f"IMS Monitor Failed: {e}")
+            _send_telegram_message(f"IMS Monitor Failed: {e}", parse_mode=None)
+    else:
+        logger.info("--- IMS Monitor Skipped (set ENABLE_IMS_MONITOR=1 to enable) ---")
 
     # Run Portal Monitor (API + Fallback)
     logger.info("--- Running Portal Monitor ---")
