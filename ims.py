@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 
 IMS_BASE_URL = "https://ims.tau.ac.il"
+DEFAULT_TIMEOUT = 30  # seconds
 
 
 @dataclass(unsafe_hash=True)
@@ -44,9 +45,10 @@ class IMS:
         self.session.verify = self.verify_ssl
 
         # Because of stupid redirection stuff, we need to sign in to the regular stuff before IMS.
-        self.session.get(IMS_BASE_URL + "/TalSSO/")
+        self.session.get(IMS_BASE_URL + "/TalSSO/", timeout=DEFAULT_TIMEOUT)
         self.session.post(
             "https://nidp.tau.ac.il/nidp/saml2/sso?id=10&sid=0&option=credential",
+            timeout=DEFAULT_TIMEOUT
         )
         self.session.post(
             "https://nidp.tau.ac.il/nidp/saml2/sso?sid=0",
@@ -56,8 +58,9 @@ class IMS:
                 "Ecom_User_Pid": self.id,
                 "Ecom_Password": self.password,
             },
+            timeout=DEFAULT_TIMEOUT
         )
-        self.session.get("https://nidp.tau.ac.il/nidp/saml2/sso?sid=0")
+        self.session.get("https://nidp.tau.ac.il/nidp/saml2/sso?sid=0", timeout=DEFAULT_TIMEOUT)
 
         response = self.session.post(
             IMS_BASE_URL + "/TalSSO/Login_Chk.aspx",
@@ -69,6 +72,7 @@ class IMS:
                 "javas": "1",
                 "src": "",
             },
+            timeout=DEFAULT_TIMEOUT
         )
 
         # New ws-fed flow returns an auto-submitted HTML form that we must submit manually.
@@ -89,13 +93,13 @@ class IMS:
                         if input_element.has_attr("name")
                     }
                     response = self.session.post(
-                        action_url, data=form_data, allow_redirects=True
+                        action_url, data=form_data, allow_redirects=True, timeout=DEFAULT_TIMEOUT
                     )
 
         # Some flows still require a manual hit to Main.aspx to finish session setup.
         if "/TalSSO/Sys/Main.aspx" not in response.url:
             response = self.session.get(
-                IMS_BASE_URL + "/TalSSO/Sys/Main.aspx", allow_redirects=True
+                IMS_BASE_URL + "/TalSSO/Sys/Main.aspx", allow_redirects=True, timeout=DEFAULT_TIMEOUT
             )
 
         if "/TalSSO/Sys/Main.aspx" not in response.url:
@@ -116,7 +120,7 @@ class IMS:
         params["dt"] = datetime.datetime.now().strftime("%d%m%Y%H%M%S")
 
         url = IMS_BASE_URL + "/TalSSO/" + path + "?" + urlencode(params)
-        response = self.session.request(method, url, data=data)
+        response = self.session.request(method, url, data=data, timeout=DEFAULT_TIMEOUT)
         result = BeautifulSoup(response.text, "html.parser")
 
         # The system is currently sometimes inconsistent.
@@ -142,6 +146,8 @@ class IMS:
             "get", "TP/Tziunim_P.aspx", params={"src": "", "sys": "tal", "rightmj": 1}
         )
         form_element = page.find("form", {"name": "frmfree"})
+        if not form_element:
+            return []
         return [
             input_element["value"]
             for input_element in form_element.find_all("input", {"name": "tckey"})
@@ -226,3 +232,4 @@ class IMS:
             result.update(study_plan_grades)
 
         return list(result)
+

@@ -173,8 +173,6 @@ def _normalize_date_for_compare(value: Any) -> str:
 
 
 def _normalize_notebook_value(value: Any, *, normalized_grade: str) -> bool:
-    if not normalized_grade:
-        return False
     return _is_truthy(value)
 
 

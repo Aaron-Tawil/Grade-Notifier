@@ -13,4 +13,6 @@ __pycache__/
 # IDEs
 .vscode/
 .idea/
-prod.env.yaml 
+prod.env.yaml
+
+tests/
